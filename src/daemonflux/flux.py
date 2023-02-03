@@ -89,7 +89,7 @@ class Flux:
     def _load_splines(self):
         spl_fname = (
             self._data_dir
-            / f"phantom_files_{self.splver}"
+            / f"daemon_files_{self.splver}"
             / f"splines_{self.splver}.pkl"
         )
         assert spl_fname.is_file(), f"Calibration file {spl_fname} not found."
@@ -116,7 +116,7 @@ class Flux:
         the order in known_params."""
         cal_fname = (
             self._data_dir
-            / f"phantom_files_{self.splver}"
+            / f"daemon_files_{self.splver}"
             / f"calibration_{self.calver}.pkl"
         )
         assert cal_fname.is_file(), f"Calibration file {cal_fname} not found."
