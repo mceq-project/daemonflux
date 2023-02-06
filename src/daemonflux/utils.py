@@ -2,6 +2,31 @@ from pathlib import Path
 import urllib
 import shutil
 import zipfile
+import numpy as np
+
+
+# Quantities in daemonflux non-prefixed are conventional
+quantities = [
+    "muflux",
+    "muratio",
+    "numuflux",
+    "numuratio",
+    "nueflux",
+    "nueratio",
+    "flavorratio",
+    "mu+",
+    "mu-",
+    "numu",
+    "antinumu",
+    "nue",
+    "antinue",
+]
+# Total are conventional + prompt if available
+quantities += ["total_" + q for q in quantities]
+
+
+def grid_cov(jac, cov):
+    return np.dot(jac, np.dot(cov, jac.T))
 
 
 def _download_file(outfile, url):
@@ -17,7 +42,7 @@ def _download_file(outfile, url):
 
     fname = Path(url).name
     try:
-        response = urllib.request.urlopen(url)
+        response = urllib.request.urlopen(url) # noqa
     except BaseException:
         raise ConnectionError(
             f"_download_file: probably something wrong with url = '{url}'"
