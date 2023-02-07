@@ -105,7 +105,7 @@ class Flux:
             known_parameters.append(k)
 
         if cal_file is None:
-            # print("daemonflux calibration not used.")
+            print("daemonflux calibration not used.")
             self.params = FluxParameters(
                 known_parameters,
                 np.zeros(len(known_parameters)),
@@ -270,7 +270,6 @@ class Flux:
             self._check_input(grid, exp_tag, angle, quantity)
 
         with self._temporary_exclude_parameters("GSF" if only_hadronic else None):
-            print(self.params.known_parameters, self.params.values, self.params.errors)
 
             jac = self.jac_spl[exp_tag][angle]
 
