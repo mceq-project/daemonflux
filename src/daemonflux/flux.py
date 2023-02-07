@@ -1,7 +1,7 @@
 import numpy as np
 import pickle
 import pathlib
-from utils import grid_cov, quantities
+from .utils import grid_cov, quantities
 from contextlib import contextmanager
 
 # # Anatoli's installation requires me to add this
@@ -86,20 +86,23 @@ class Flux:
         #     self.jac_spl["deis2"] = self.jac_spl["DEIS"]
 
     def _load_splines(self, spl_file, cal_file):
+        from .utils import rearrange_covariance
 
         assert pathlib.Path(spl_file).is_file(), f"Spline file {spl_file} not found."
         (
-            known_parameters,
+            known_pars,
             self.fl_spl,
             self.jac_spl,
             self.GSF19_cov,
         ) = pickle.load(open(spl_file, "rb"))
 
-        known_parameters = [
-            k
-            for k in known_parameters
-            if k not in self.exclude or k.startswith("total_")
-        ]
+        known_parameters = []
+        for k in known_pars:
+            if k in self.exclude:
+                continue
+            if k.startswith("total_"):
+                continue
+            known_parameters.append(k)
 
         if cal_file is None:
             # print("daemonflux calibration not used.")
@@ -110,27 +113,16 @@ class Flux:
             )
             return
 
-        assert isinstance(cal_file, pathlib.Path)
-        assert cal_file.is_file(), f"Calibration file {cal_file} not found."
+        assert pathlib.Path(
+            cal_file
+        ).is_file(), f"Calibration file {cal_file} not found."
 
-        # TODO Remove python2 compatibility
-        # try:
-        calibration_d = pickle.load(open(str(cal_file), "rb"))  # , encoding="latin1")
-        # except:
-        #     calibration_d = pickle.load(open(str(cal_file), "rb"), encoding="latin1")
-
-        def _remap_covariance(original_order, new_order, cov):
-            cov_new = np.zeros((len(new_order), len(new_order)))
-            remap = original_order
-            for i in range(cov_new.shape[0]):
-                for j in range(cov_new.shape[1]):
-                    cov_new[i, j] = cov[remap[new_order[i]], remap[new_order[j]]]
-            return cov_new
+        calibration_d = pickle.load(open(str(cal_file), "rb"), encoding="latin1")
 
         param_values = []
         for ip, n in enumerate(known_parameters):
             try:
-                param_values = calibration_d["params"][n]["value"]
+                param_values.append(calibration_d["params"][n]["value"])
             except KeyError:
                 raise KeyError("No calibration for", n)
 
@@ -149,11 +141,13 @@ class Flux:
         ), "Parameters inconsistent between spl and calibration file"
 
         # Create a new covariance with the correct order of parameters
-        cov = _remap_covariance(
+        cov = rearrange_covariance(
             original_param_order,
             known_parameters,
             calibration_d["cov_matrix"][:n_physics_params, :n_physics_params],
         )
+
+        # Check if the the rearranged cov is correct
         for ip, pi in enumerate(known_parameters):
             for jp, pj in enumerate(known_parameters):
                 assert (
@@ -168,6 +162,7 @@ class Flux:
                     + str(pj)
                     + " incorrectly sorted."
                 )
+
         self.params = FluxParameters(known_parameters, np.asarray(param_values), cov)
 
     def _check_input(self, grid, exp_tag, angle, quantity):
@@ -286,15 +281,6 @@ class Flux:
                 ]
             ).T
             error = np.sqrt(np.diag(self._get_grid_cov(jacfl, self.params.cov)))
-            error = np.sqrt(
-                np.sum(
-                    [
-                        jac[dk][quantity](np.log(grid)) ** 2
-                        for dk in self.params.known_parameters
-                    ],
-                    axis=0,
-                )
-            )
             return np.exp(self.fl_spl[exp_tag][angle][quantity](np.log(grid))) * error
 
     def print_experiments(self):

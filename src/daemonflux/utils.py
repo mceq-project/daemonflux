@@ -42,7 +42,7 @@ def _download_file(outfile, url):
 
     fname = Path(url).name
     try:
-        response = urllib.request.urlopen(url) # noqa
+        response = urllib.request.urlopen(url)  # type: ignore
     except BaseException:
         raise ConnectionError(
             f"_download_file: probably something wrong with url = '{url}'"
@@ -114,3 +114,12 @@ def _cached_data_dir(url):
         with open(version_file, "w") as vf:
             vf.write(url)
     return str(model_dir) + "/"
+
+
+def rearrange_covariance(original_order, new_order, cov):
+    cov_new = np.zeros((len(new_order), len(new_order)))
+    remap = original_order
+    for i in range(cov_new.shape[0]):
+        for j in range(cov_new.shape[1]):
+            cov_new[i, j] = cov[remap[new_order[i]], remap[new_order[j]]]
+    return cov_new
