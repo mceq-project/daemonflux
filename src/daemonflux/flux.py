@@ -3,7 +3,6 @@ import pickle
 import pathlib
 from .utils import grid_cov, quantities
 from contextlib import contextmanager
-from abc import ABCMeta
 
 # # Anatoli's installation requires me to add this
 # import sys
@@ -151,7 +150,7 @@ class Flux:
 
         self.supported_fluxes = []
         for exp in self.fl_spl:
-            subflux = FluxEntry(
+            subflux = _FluxEntry(
                 exp, self.fl_spl[exp], self.jac_spl[exp], self.params, self.exclude
             )
             setattr(self, exp, subflux)
@@ -253,7 +252,7 @@ class Flux:
             self.params = prev
 
 
-class FluxEntry(Flux):
+class _FluxEntry(Flux):
     def __init__(self, label, fl_spl, jac_spl, params, exclude) -> None:
         self.label = label
         self.fl_spl = fl_spl
