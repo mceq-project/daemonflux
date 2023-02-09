@@ -3,6 +3,7 @@ import pickle
 import pathlib
 from .utils import grid_cov, quantities
 from contextlib import contextmanager
+from abc import ABCMeta
 
 # # Anatoli's installation requires me to add this
 # import sys
@@ -13,11 +14,11 @@ from contextlib import contextmanager
 base_path = pathlib.Path(__file__).parent.absolute()
 
 
-def format_angle(ang):
+def format_angle(ang) -> str:
     return "{:4.4f}".format(float(ang))
 
 
-class FluxParameters:
+class Parameters:
     def __init__(
         self, known_parameters: list, values: np.ndarray, cov: np.ndarray
     ) -> None:
@@ -54,10 +55,7 @@ class Flux:
         cal_file=None,
         use_calibration=True,
         exclude=[],
-    ):  # Python3 stuff -> None:
-        # Flux tables naming (JP)
-        self._mufit_spl_file = None
-        self._calibration_file = None
+    ) -> None:
         self.exclude = exclude
 
         spl_file = spl_file if spl_file else self._default_spl_file
@@ -68,22 +66,8 @@ class Flux:
 
         self._load_splines(spl_file, cal_file)
 
-        self._apply_little_hacks()
-
     def _get_grid_cov(self, jac, cov):
         return np.dot(jac, np.dot(cov, jac.T))
-
-    def _apply_little_hacks(self):
-        # self.GSF19_covinv = np.linalg.inv(self.GSF19_cov)
-        # self.GSF19_err = np.sqrt(np.diag(self.GSF19_cov))
-
-        self.fl_spl["opera"] = self.fl_spl["ams"]
-        self.jac_spl["opera"] = self.jac_spl["ams"]
-
-        # if "DEIS" in self.fl_spl:
-        #     print("Adjusting DEIS name")
-        #     self.fl_spl["deis2"] = self.fl_spl["DEIS"]
-        #     self.jac_spl["deis2"] = self.jac_spl["DEIS"]
 
     def _load_splines(self, spl_file, cal_file):
         from .utils import rearrange_covariance
@@ -106,7 +90,7 @@ class Flux:
 
         if cal_file is None:
             print("daemonflux calibration not used.")
-            self.params = FluxParameters(
+            self.params = Parameters(
                 known_parameters,
                 np.zeros(len(known_parameters)),
                 np.diag(np.ones(len(known_parameters))),
@@ -163,25 +147,61 @@ class Flux:
                     + " incorrectly sorted."
                 )
 
-        self.params = FluxParameters(known_parameters, np.asarray(param_values), cov)
+        self.params = Parameters(known_parameters, np.asarray(param_values), cov)
+        self.supported_fluxes = []
+        for exp in self.fl_spl:
+            subflux = FluxEntry(
+                exp, self.fl_spl[exp], self.jac_spl[exp], self.params, self.exclude
+            )
+            setattr(self, exp, subflux)
+            self.supported_fluxes.append(exp)
 
-    def _check_input(self, grid, exp_tag, angle, quantity):
+    def print_experiments(self):
+        for exp in self.fl_spl:
+            print("{0}: [{1}]".format(exp, ", ".join(self.fl_spl[exp].keys())))
 
-        assert self.fl_spl is not None, "Splines have to be initialized"
-        assert self.jac_spl is not None, "Jacobians required for error estimate"
-        assert np.max(grid) <= 1e9 and np.min(grid) >= 5e-2, "Energy out of range"
-        assert exp_tag in self.fl_spl, "Available experiments: {0}".format(
-            ", ".join(self.fl_spl.keys())
-        )
-        assert angle in self.fl_spl[exp_tag], "Available angles: {0}".format(
-            ", ".join(self.fl_spl[exp_tag].keys())
-        )
-        assert quantity in self._quantities, "Quantity must be one of {0}.".format(
-            ", ".join(self._quantities)
-        )
-        assert (
-            sum(["GSF_" in p for p in self.exclude]) == 0
-        ), "Individual GSF parameters can't be excluded, use 'GSF' globally."
+    @property
+    def zenith_angles(self, exp=""):
+        if not exp and len(self.supported_fluxes) > 1:
+            raise Exception("'exp' argument needs to be one of", self.supported_fluxes)
+        if len(self.supported_fluxes) == 1:
+            return self.__getattribute__(self.supported_fluxes[0]).zenith_angles
+        else:
+            return self.__getattribute__(exp).zenith_angles
+
+    def flux(self, grid, zenith_deg, quantity, params={}, exp=""):
+        if not exp and len(self.supported_fluxes) > 1:
+            raise Exception("'exp' argument needs to be one of", self.supported_fluxes)
+        if len(self.supported_fluxes) == 1:
+            return self.__getattribute__(self.supported_fluxes[0]).flux(
+                grid, zenith_deg, quantity, params
+            )
+        else:
+            return self.__getattribute__(exp).flux(grid, zenith_deg, quantity, params)
+
+    def error(self, grid, zenith_deg, quantity, only_hadronic=False, exp=""):
+        if not exp and len(self.supported_fluxes) > 1:
+            raise Exception("'exp' argument needs to be one of", self.supported_fluxes)
+
+        if len(self.supported_fluxes) == 1:
+            return self.__getattribute__(self.supported_fluxes[0]).error(
+                grid,
+                zenith_deg,
+                quantity,
+                only_hadronic,
+            )
+        else:
+            return self.__getattribute__(exp).error(
+                grid,
+                zenith_deg,
+                quantity,
+                only_hadronic,
+            )
+
+    def __getitem__(self, exp_label):
+        if exp_label not in self.supported_fluxes:
+            raise KeyError("Supported fluxes are", self.supported_fluxes)
+        return self.__getattribute__(exp_label)
 
     @contextmanager
     def _temporary_parameters(self, modified_params: dict):
@@ -231,22 +251,47 @@ class Flux:
 
             self.params = prev
 
+
+class FluxEntry(Flux):
+    def __init__(self, label, fl_spl, jac_spl, params, exclude) -> None:
+        self.label = label
+        self.fl_spl = fl_spl
+        self.jac_spl = jac_spl
+        self.params = params
+        self.exclude = exclude
+        assert self.fl_spl is not None, "Splines have to be initialized"
+        assert self.jac_spl is not None, "Jacobians required for error estimate"
+
+    @property
+    def zenith_angles(self):
+        return sorted(self.fl_spl.keys())
+
+    def _check_input(self, grid, angle, quantity):
+
+        assert np.max(grid) <= 1e9 and np.min(grid) >= 5e-2, "Energy out of range"
+        assert angle in self.zenith_angles, "Available angles: {0}".format(
+            ", ".join(self.fl_spl.keys())
+        )
+        assert quantity in self._quantities, "Quantity must be one of {0}.".format(
+            ", ".join(self._quantities)
+        )
+        assert (
+            sum(["GSF_" in p for p in self.exclude]) == 0
+        ), "Individual GSF parameters can't be excluded, use 'GSF' globally."
+
     def flux(
         self,
         grid,
-        exp_tag,
         zenith_deg,
         quantity,
         params={},
-        make_checks=True,
     ):
         angle = "average" if zenith_deg == "average" else format_angle(zenith_deg)
 
-        if make_checks:
-            self._check_input(grid, exp_tag, angle, quantity)
+        self._check_input(grid, angle, quantity)
 
-        jac = self.jac_spl[exp_tag][angle]
-        fl = self.fl_spl[exp_tag][angle]
+        jac = self.jac_spl[angle]
+        fl = self.fl_spl[angle]
         with self._temporary_parameters(params):
             corrections = 1 + np.sum(
                 [v * jac[dk][quantity](np.log(grid)) for (dk, v) in self.params],
@@ -257,21 +302,17 @@ class Flux:
     def error(
         self,
         grid,
-        exp_tag,
         zenith_deg,
         quantity,
-        make_checks=True,
         only_hadronic=False,
     ):
-
         angle = "average" if zenith_deg == "average" else format_angle(zenith_deg)
 
-        if make_checks:
-            self._check_input(grid, exp_tag, angle, quantity)
+        self._check_input(grid, angle, quantity)
 
         with self._temporary_exclude_parameters("GSF" if only_hadronic else None):
 
-            jac = self.jac_spl[exp_tag][angle]
+            jac = self.jac_spl[angle]
 
             jacfl = np.vstack(
                 [
@@ -280,8 +321,4 @@ class Flux:
                 ]
             ).T
             error = np.sqrt(np.diag(self._get_grid_cov(jacfl, self.params.cov)))
-            return np.exp(self.fl_spl[exp_tag][angle][quantity](np.log(grid))) * error
-
-    def print_experiments(self):
-        for exp in self.fl_spl:
-            print("{0}: [{1}]".format(exp, ", ".join(self.fl_spl[exp].keys())))
+            return np.exp(self.fl_spl[angle][quantity](np.log(grid))) * error
