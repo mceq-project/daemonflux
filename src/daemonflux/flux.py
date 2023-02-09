@@ -95,59 +95,60 @@ class Flux:
                 np.zeros(len(known_parameters)),
                 np.diag(np.ones(len(known_parameters))),
             )
-            return
+        else:
 
-        assert pathlib.Path(
-            cal_file
-        ).is_file(), f"Calibration file {cal_file} not found."
+            assert pathlib.Path(
+                cal_file
+            ).is_file(), f"Calibration file {cal_file} not found."
 
-        calibration_d = pickle.load(open(str(cal_file), "rb"), encoding="latin1")
+            calibration_d = pickle.load(open(str(cal_file), "rb"), encoding="latin1")
 
-        param_values = []
-        for ip, n in enumerate(known_parameters):
-            try:
-                param_values.append(calibration_d["params"][n]["value"])
-            except KeyError:
-                raise KeyError("No calibration for", n)
+            param_values = []
+            for ip, n in enumerate(known_parameters):
+                try:
+                    param_values.append(calibration_d["params"][n]["value"])
+                except KeyError:
+                    raise KeyError("No calibration for", n)
 
-        # Reorder the covariance such that it corresponds to the know_params order
-        original_param_order = dict(
-            [
-                (p, ip)
-                for ip, p in enumerate(calibration_d["cov_params"])
-                if p in known_parameters
-            ]
-        )
-        n_physics_params = max(original_param_order.values()) + 1
+            # Reorder the covariance such that it corresponds to the know_params order
+            original_param_order = dict(
+                [
+                    (p, ip)
+                    for ip, p in enumerate(calibration_d["cov_params"])
+                    if p in known_parameters
+                ]
+            )
+            n_physics_params = max(original_param_order.values()) + 1
 
-        assert sorted(original_param_order.keys()) == sorted(
-            known_parameters
-        ), "Parameters inconsistent between spl and calibration file"
+            assert sorted(original_param_order.keys()) == sorted(
+                known_parameters
+            ), "Parameters inconsistent between spl and calibration file"
 
-        # Create a new covariance with the correct order of parameters
-        cov = rearrange_covariance(
-            original_param_order,
-            known_parameters,
-            calibration_d["cov_matrix"][:n_physics_params, :n_physics_params],
-        )
+            # Create a new covariance with the correct order of parameters
+            cov = rearrange_covariance(
+                original_param_order,
+                known_parameters,
+                calibration_d["cov_matrix"][:n_physics_params, :n_physics_params],
+            )
 
-        # Check if the the rearranged cov is correct
-        for ip, pi in enumerate(known_parameters):
-            for jp, pj in enumerate(known_parameters):
-                assert (
-                    calibration_d["cov_matrix"][
-                        original_param_order[pi], original_param_order[pj]
-                    ]
-                    == cov[ip, jp]
-                ), (
-                    "Covariance for parameters "
-                    + str(pi)
-                    + " "
-                    + str(pj)
-                    + " incorrectly sorted."
-                )
+            # Check if the the rearranged cov is correct
+            for ip, pi in enumerate(known_parameters):
+                for jp, pj in enumerate(known_parameters):
+                    assert (
+                        calibration_d["cov_matrix"][
+                            original_param_order[pi], original_param_order[pj]
+                        ]
+                        == cov[ip, jp]
+                    ), (
+                        "Covariance for parameters "
+                        + str(pi)
+                        + " "
+                        + str(pj)
+                        + " incorrectly sorted."
+                    )
 
-        self.params = Parameters(known_parameters, np.asarray(param_values), cov)
+            self.params = Parameters(known_parameters, np.asarray(param_values), cov)
+
         self.supported_fluxes = []
         for exp in self.fl_spl:
             subflux = FluxEntry(
