@@ -1,7 +1,7 @@
 import numpy as np
 import pickle
 import pathlib
-from .utils import grid_cov, quantities
+from .utils import grid_cov, quantities, is_iterable
 from contextlib import contextmanager
 
 # # Anatoli's installation requires me to add this
@@ -49,14 +49,10 @@ class Flux:
     _default_cal_file = _data_dir / "daemoncal_20221115_0.pkl"
 
     def __init__(
-        self,
-        spl_file=None,
-        cal_file=None,
-        use_calibration=True,
-        exclude=[],
+        self, spl_file=None, cal_file=None, use_calibration=True, exclude=[], debug=1
     ) -> None:
         self.exclude = exclude
-
+        self._debug = debug
         spl_file = spl_file if spl_file else self._default_spl_file
         cal_file = cal_file if cal_file else self._default_cal_file
 
@@ -74,8 +70,8 @@ class Flux:
         assert pathlib.Path(spl_file).is_file(), f"Spline file {spl_file} not found."
         (
             known_pars,
-            self.fl_spl,
-            self.jac_spl,
+            self._fl_spl,
+            self._jac_spl,
             self.GSF19_cov,
         ) = pickle.load(open(spl_file, "rb"))
 
@@ -149,16 +145,21 @@ class Flux:
             self.params = Parameters(known_parameters, np.asarray(param_values), cov)
 
         self.supported_fluxes = []
-        for exp in self.fl_spl:
+        for exp in self._fl_spl:
             subflux = _FluxEntry(
-                exp, self.fl_spl[exp], self.jac_spl[exp], self.params, self.exclude
+                exp,
+                self._fl_spl[exp],
+                self._jac_spl[exp],
+                self.params,
+                self.exclude,
+                self._debug,
             )
             setattr(self, exp, subflux)
             self.supported_fluxes.append(exp)
 
     def print_experiments(self):
-        for exp in self.fl_spl:
-            print("{0}: [{1}]".format(exp, ", ".join(self.fl_spl[exp].keys())))
+        for exp in self._fl_spl:
+            print("{0}: [{1}]".format(exp, ", ".join(self._fl_spl[exp].keys())))
 
     @property
     def zenith_angles(self, exp=""):
@@ -169,34 +170,25 @@ class Flux:
         else:
             return self.__getattribute__(exp).zenith_angles
 
-    def flux(self, grid, zenith_deg, quantity, params={}, exp=""):
+    def _get_flux_instance(self, exp):
         if not exp and len(self.supported_fluxes) > 1:
             raise Exception("'exp' argument needs to be one of", self.supported_fluxes)
+
         if len(self.supported_fluxes) == 1:
-            return self.__getattribute__(self.supported_fluxes[0]).flux(
-                grid, zenith_deg, quantity, params
-            )
+            return self.__getattribute__(self.supported_fluxes[0])
         else:
-            return self.__getattribute__(exp).flux(grid, zenith_deg, quantity, params)
+            return self.__getattribute__(exp)
+
+    def flux(self, grid, zenith_deg, quantity, params={}, exp=""):
+        return self._get_flux_instance(exp).flux(grid, zenith_deg, quantity, params)
 
     def error(self, grid, zenith_deg, quantity, only_hadronic=False, exp=""):
-        if not exp and len(self.supported_fluxes) > 1:
-            raise Exception("'exp' argument needs to be one of", self.supported_fluxes)
-
-        if len(self.supported_fluxes) == 1:
-            return self.__getattribute__(self.supported_fluxes[0]).error(
-                grid,
-                zenith_deg,
-                quantity,
-                only_hadronic,
-            )
-        else:
-            return self.__getattribute__(exp).error(
-                grid,
-                zenith_deg,
-                quantity,
-                only_hadronic,
-            )
+        return self._get_flux_instance(exp).error(
+            grid,
+            zenith_deg,
+            quantity,
+            only_hadronic,
+        )
 
     def __getitem__(self, exp_label):
         if exp_label not in self.supported_fluxes:
@@ -253,31 +245,31 @@ class Flux:
 
 
 class _FluxEntry(Flux):
-    def __init__(self, label, fl_spl, jac_spl, params, exclude) -> None:
+    def __init__(self, label, fl_spl, jac_spl, params, exclude, debug) -> None:
         self.label = label
-        self.fl_spl = fl_spl
-        self.jac_spl = jac_spl
+        self._fl_spl = fl_spl
+        self._jac_spl = jac_spl
         self.params = params
         self.exclude = exclude
-        assert self.fl_spl is not None, "Splines have to be initialized"
-        assert self.jac_spl is not None, "Jacobians required for error estimate"
+        self._debug = debug
+        assert self._fl_spl is not None, "Splines have to be initialized"
+        assert self._jac_spl is not None, "Jacobians required for error estimate"
+
+        self._zenith_angles = list(self._fl_spl.keys())
+        self._zenith_deg_arr = np.asarray([float(a) for a in self._zenith_angles])
+        self._zenith_deg_arr.sort()
+        self._zenith_cos_arr = np.cos(np.deg2rad(self._zenith_deg_arr))
 
     @property
-    def zenith_angles(self):
-        return sorted(self.fl_spl.keys())
+    def zenith_angles(self) -> list:
+        return [format_angle(a) for a in self._zenith_deg_arr]
 
-    def _check_input(self, grid, angle, quantity):
+    def _check_input(self, grid, quantity) -> None:
 
         assert np.max(grid) <= 1e9 and np.min(grid) >= 5e-2, "Energy out of range"
-        assert angle in self.zenith_angles, "Available angles: {0}".format(
-            ", ".join(self.fl_spl.keys())
-        )
         assert quantity in self._quantities, "Quantity must be one of {0}.".format(
             ", ".join(self._quantities)
         )
-        assert (
-            sum(["GSF_" in p for p in self.exclude]) == 0
-        ), "Individual GSF parameters can't be excluded, use 'GSF' globally."
 
     def flux(
         self,
@@ -285,19 +277,25 @@ class _FluxEntry(Flux):
         zenith_deg,
         quantity,
         params={},
-    ):
-        angle = "average" if zenith_deg == "average" else format_angle(zenith_deg)
+    ) -> np.ndarray:
+        """Flux multiplied by E^3 in units of GeV^2/(cm^2 s sr)"""
+        self._check_input(grid, quantity)
 
-        self._check_input(grid, angle, quantity)
-
-        jac = self.jac_spl[angle]
-        fl = self.fl_spl[angle]
-        with self._temporary_parameters(params):
-            corrections = 1 + np.sum(
-                [v * jac[dk][quantity](np.log(grid)) for (dk, v) in self.params],
-                axis=0,
-            )
-        return np.exp(fl[quantity](np.log(grid))) * corrections
+        if isinstance(zenith_deg, str) and zenith_deg == "average":
+            raise Exception("Need to handle this separately.")
+        if not is_iterable(zenith_deg) and float(zenith_deg) in self._zenith_deg_arr:
+            if self._debug > 1:
+                print(
+                    "Returning flux from spline for exactly matched zenith angle "
+                    + f"{format_angle(zenith_deg)}"
+                )
+            return self._flux_from_spl(grid, format_angle(zenith_deg), quantity, params)
+        else:
+            if self._debug > 1:
+                print(
+                    f"Calling flux interpolation routines with zenith arg={zenith_deg}"
+                )
+            return self._flux_from_interp(grid, zenith_deg, quantity)
 
     def error(
         self,
@@ -305,14 +303,85 @@ class _FluxEntry(Flux):
         zenith_deg,
         quantity,
         only_hadronic=False,
-    ):
-        angle = "average" if zenith_deg == "average" else format_angle(zenith_deg)
+    ) -> np.ndarray:
+        """Error multiplied by E^3 in units of GeV^2/(cm^2 s sr)"""
 
-        self._check_input(grid, angle, quantity)
+        self._check_input(grid, quantity)
+        if isinstance(zenith_deg, str) and zenith_deg == "average":
+            raise Exception("Need to handle this separately.")
+
+        if not is_iterable(zenith_deg) and float(zenith_deg) in self._zenith_deg_arr:
+            if self._debug > 1:
+                print(
+                    "Returning error from spline for exactly matched zenith angle "
+                    + f"{format_angle(zenith_deg)}"
+                )
+            return self._error_from_spl(
+                grid, format_angle(zenith_deg), quantity, only_hadronic
+            )
+        else:
+            if self._debug > 1:
+                print(
+                    f"Calling error interpolation routines with zenith arg={zenith_deg}"
+                )
+            return self._error_from_interp(grid, zenith_deg, quantity)
+
+    def _flux_from_spl(
+        self,
+        grid,
+        zenith_deg,
+        quantity,
+        params={},
+    ) -> np.ndarray:
+        if self._debug > 2:
+            print(f"Return {quantity} flux for {zenith_deg}, params=", params)
+        jac = self._jac_spl[zenith_deg]
+        fl = self._fl_spl[zenith_deg]
+        with self._temporary_parameters(params):
+            corrections = 1 + np.sum(
+                [v * jac[dk][quantity](np.log(grid)) for (dk, v) in self.params],
+                axis=0,
+            )
+        return np.exp(fl[quantity](np.log(grid))) * corrections
+
+    def _flux_from_interp(
+        self,
+        grid,
+        zenith_deg,
+        quantity,
+        params={},
+    ) -> np.ndarray:
+        from scipy.interpolate import interp1d
+
+        zenith_darr = np.atleast_1d(zenith_deg).astype("float64")
+        zenith_carr = np.cos(np.deg2rad(zenith_darr))
+
+        idxmin, idxmax = self._interpolation_domain(zenith_darr)
+        interp_array = np.zeros((idxmax - idxmin, len(grid)))
+        for i, idx in enumerate(range(idxmin, idxmax)):
+            interp_array[i, :] = self._flux_from_spl(
+                grid, self.zenith_angles[idx], quantity, params
+            )
+        return interp1d(self._zenith_cos_arr[idxmin:idxmax], interp_array, axis=0)(
+            zenith_carr
+        ).T.squeeze()
+
+    def _error_from_spl(
+        self,
+        grid,
+        zenith_deg,
+        quantity,
+        only_hadronic=False,
+    ) -> np.ndarray:
+        if self._debug > 2:
+            print(
+                f"Return {quantity} flux for {zenith_deg}, only_hadronic=",
+                only_hadronic,
+            )
 
         with self._temporary_exclude_parameters("GSF" if only_hadronic else None):
 
-            jac = self.jac_spl[angle]
+            jac = self._jac_spl[zenith_deg]
 
             jacfl = np.vstack(
                 [
@@ -321,4 +390,57 @@ class _FluxEntry(Flux):
                 ]
             ).T
             error = np.sqrt(np.diag(self._get_grid_cov(jacfl, self.params.cov)))
-            return np.exp(self.fl_spl[angle][quantity](np.log(grid))) * error
+            return np.exp(self._fl_spl[zenith_deg][quantity](np.log(grid))) * error
+
+    def _error_from_interp(
+        self,
+        grid,
+        zenith_deg,
+        quantity,
+        only_hadronic=False,
+    ) -> np.ndarray:
+        from scipy.interpolate import interp1d
+
+        zenith_darr = np.atleast_1d(zenith_deg).astype("float64")
+        zenith_carr = np.cos(np.deg2rad(zenith_darr))
+
+        idxmin, idxmax = self._interpolation_domain(zenith_darr)
+        interp_array = np.zeros((idxmax - idxmin, len(grid)))
+        for i, idx in enumerate(range(idxmin, idxmax)):
+            interp_array[i, :] = self._error_from_spl(
+                grid, self.zenith_angles[idx], quantity, only_hadronic
+            )
+        return interp1d(self._zenith_cos_arr[idxmin:idxmax], interp_array, axis=0)(
+            zenith_carr
+        ).T.squeeze()
+
+    def _interpolation_domain(self, zenith_angles_deg) -> tuple:
+        zenith_angles_deg = np.atleast_1d(zenith_angles_deg).astype("float64")
+        # Check if sorted
+        assert np.all(np.diff(zenith_angles_deg) >= 0), "Requested angles not sorted."
+        # Find the range of zenith angles
+        if np.min(zenith_angles_deg) < np.min(self._zenith_deg_arr) or np.max(
+            zenith_angles_deg
+        ) > np.max(self._zenith_deg_arr):
+            raise Exception(
+                "Requested zenith angles out of range {0} - {1}".format(
+                    format_angle(self._zenith_deg_arr[0]),
+                    format_angle(self._zenith_deg_arr[-1]),
+                )
+            )
+        idxmin = (
+            np.searchsorted(
+                self._zenith_deg_arr, np.min(zenith_angles_deg), side="right"
+            )
+            - 1
+        )
+        idxmax = np.searchsorted(
+            self._zenith_deg_arr, np.max(zenith_angles_deg), side="left"
+        )
+        if self._debug > 2:
+            print(
+                "Zenith angle domain is {0} - {1}".format(
+                    self.zenith_angles[idxmin], self.zenith_angles[idxmax]
+                )
+            )
+        return idxmin, idxmax + 1

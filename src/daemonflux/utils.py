@@ -29,6 +29,12 @@ def grid_cov(jac, cov):
     return np.dot(jac, np.dot(cov, jac.T))
 
 
+def is_iterable(arg):
+    from collections.abc import Iterable
+
+    return isinstance(arg, Iterable) and not isinstance(arg, str)
+
+
 def _download_file(outfile, url):
     """Download a file from 'url' to 'outfile'"""
     from rich.progress import (
