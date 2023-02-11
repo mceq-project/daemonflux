@@ -3,6 +3,7 @@ import urllib
 import shutil
 import zipfile
 import numpy as np
+from typing import Dict
 
 
 # Quantities in daemonflux non-prefixed are conventional
@@ -25,11 +26,56 @@ quantities = [
 quantities += ["total_" + q for q in quantities]
 
 
-def grid_cov(jac, cov):
+def format_angle(ang: float) -> str:
+    """
+    Format the given angle to a string with 4 decimal places.
+
+    Parameters
+    ----------
+    ang : float
+        The angle to be formatted.
+
+    Returns
+    -------
+    str
+        The formatted angle as a string.
+    """
+    return "{:4.4f}".format(float(ang))
+
+
+def grid_cov(jac: np.ndarray, cov: np.ndarray) -> np.ndarray:
+    """
+    Calculate the covariance of the grid.
+
+    Parameters
+    ----------
+    jac : np.ndarray
+        The Jacobian matrix.
+    cov : np.ndarray
+        The covariance matrix.
+
+    Returns
+    -------
+    np.ndarray
+        The covariance of the grid.
+    """
     return np.dot(jac, np.dot(cov, jac.T))
 
 
-def is_iterable(arg):
+def is_iterable(arg) -> bool:
+    """
+    Check if an argument is iterable.
+
+    Parameters
+    ----------
+    arg : Any
+        The argument to check.
+
+    Returns
+    -------
+    bool
+        Whether the argument is iterable or not.
+    """
     from collections.abc import Iterable
 
     return isinstance(arg, Iterable) and not isinstance(arg, str)
@@ -122,7 +168,25 @@ def _cached_data_dir(url):
     return str(model_dir) + "/"
 
 
-def rearrange_covariance(original_order, new_order, cov):
+def rearrange_covariance(
+    original_order: Dict[str, int], new_order: list, cov: np.ndarray
+) -> np.ndarray:
+    """Rearrange the covariance matrix to match the new ordering of parameters.
+
+    Parameters
+    ----------
+    original_order: Dict[str, int]
+        Map of current parameter order of the covariance matrix `cov`.
+    new_order: list
+        The new ordering of the parameters.
+    cov: np.ndarray
+        The covariance matrix with the original ordering of the parameters.
+
+    Returns
+    -------
+    cov_new: np.ndarray
+        The rearranged covariance matrix with the new ordering of the parameters.
+    """
     cov_new = np.zeros((len(new_order), len(new_order)))
     remap = original_order
     for i in range(cov_new.shape[0]):
