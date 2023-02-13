@@ -1,8 +1,8 @@
-from typing import Dict, Optional, Union, Tuple
+from typing import Dict, Union, Tuple, Generator, List
 import numpy as np
 import pickle
 import pathlib
-from .utils import grid_cov, quantities, is_iterable, format_angle
+from .utils import grid_cov, is_iterable, format_angle
 from contextlib import contextmanager
 
 # # Anatoli's installation requires me to add this
@@ -28,7 +28,7 @@ class Parameters:
     """
 
     def __init__(
-        self, known_parameters: list[str], values: np.ndarray, cov: np.ndarray
+        self, known_parameters: List[str], values: np.ndarray, cov: np.ndarray
     ):
         self.known_parameters = known_parameters
         self.values = values
@@ -57,7 +57,7 @@ class Parameters:
         return np.sqrt(np.diag(self.cov))
 
     @property
-    def chi2(self):
+    def chi2(self) -> float:
         """
         Returns the chi-square value of the parameters.
 
@@ -73,7 +73,7 @@ class Parameters:
         """
         return np.sum(grid_cov(self.values, self.invcov))
 
-    def __iter__(self):
+    def __iter__(self) -> Generator[Tuple[str, float], None, None]:
         """Iterate over the parameters.
 
         Yields
@@ -88,18 +88,17 @@ class Parameters:
 
 
 class Flux:
-    _quantities = quantities
-    _data_dir = pathlib.Path(base_path, "data")
-    _default_spl_file = _data_dir / "daemonspl_20221115.pkl"
-    _default_cal_file = _data_dir / "daemoncal_20221115_0.pkl"
+    # _data_dir = pathlib.Path(base_path, "data")
+    # _default_spl_file = _data_dir / "daemonspl_20221115.pkl"
+    # _default_cal_file = _data_dir / "daemoncal_20221115_0.pkl"
 
     def __init__(
         self, spl_file=None, cal_file=None, use_calibration=True, exclude=[], debug=1
     ) -> None:
         self.exclude = exclude
         self._debug = debug
-        spl_file = spl_file if spl_file else self._default_spl_file
-        cal_file = cal_file if cal_file else self._default_cal_file
+        # spl_file = spl_file  if spl_file else self._default_spl_file
+        # cal_file = cal_file  if cal_file else self._default_cal_file
 
         if not use_calibration:
             cal_file = None
@@ -223,6 +222,10 @@ class Flux:
         else:
             return self.__getattribute__(exp)
 
+    @property
+    def quantities(self, exp=""):
+        return self._get_flux_instance(exp)._quantities
+
     def flux(self, grid, zenith_deg, quantity, params={}, exp=""):
         return self._get_flux_instance(exp).flux(grid, zenith_deg, quantity, params)
 
@@ -289,6 +292,8 @@ class Flux:
 
 
 class _FluxEntry(Flux):
+    _quantities: List[str] = []
+
     def __init__(
         self,
         label: str,
@@ -325,11 +330,12 @@ class _FluxEntry(Flux):
         self._debug = debug
         assert self._fl_spl is not None, "Splines have to be initialized"
         assert self._jac_spl is not None, "Jacobians required for error estimate"
-
-        self._zenith_angles = list(self._fl_spl.keys())
+        self._spl_contains_average = "average" in self._fl_spl
+        self._zenith_angles = [a for a in self._fl_spl.keys() if a != "average"]
         self._zenith_deg_arr = np.asarray([float(a) for a in self._zenith_angles])
         self._zenith_deg_arr.sort()
         self._zenith_cos_arr = np.cos(np.deg2rad(self._zenith_deg_arr))
+        self._quantities = list(self._fl_spl[self._zenith_angles[0]].keys())
 
     @property
     def zenith_angles(self) -> list:
@@ -364,97 +370,12 @@ class _FluxEntry(Flux):
             ", ".join(self._quantities)
         )
 
-    def flux(
-        self,
-        grid: np.ndarray,
-        zenith_deg: Union[float, str],
-        quantity: str,
-        params: Optional[Dict[str, float]] = None,
-    ) -> np.ndarray:
-        """
-        Compute the flux at the given energy grid, zenith angle, and quantity.
-
-        Parameters
-        ----------
-        grid : np.ndarray
-            The energy grid in units of GeV.
-        zenith_deg : float or str
-            The zenith angle in degrees. If "average", the average flux over all zenith angles will be returned.
-        quantity : str
-            The type of flux to be returned. Must be one of "total", "muon", "hadron", "electron".
-        params : Optional[Dict[str, float]], optional
-            A dictionary of parameter values to use for the calculation, by default None.
-
-        Returns
-        -------
-        np.ndarray
-            The flux multiplied by E^3 in units of GeV^2/(cm^2 s sr).
-
-        Raises
-        ------
-        Exception
-            If the zenith angle is "average".
-        """
-        self._check_input(grid, quantity)
-
-        if isinstance(zenith_deg, str) and zenith_deg == "average":
-            raise Exception("Need to handle this separately.")
-        if not is_iterable(zenith_deg) and float(zenith_deg) in self._zenith_deg_arr:
-            return self._flux_from_spl(grid, format_angle(zenith_deg), quantity, params)
-        else:
-            return self._flux_from_interp(grid, zenith_deg, quantity)
-
-    def error(
-        self,
-        grid: np.ndarray,
-        zenith_deg: Union[float, str],
-        quantity: str,
-        only_hadronic: Optional[bool] = False,
-    ) -> np.ndarray:
-        """
-        Return the error of the flux estimation for the given parameters.
-
-        The error is multiplied by E^3 in units of GeV^2/(cm^2 s sr).
-
-        Parameters
-        ----------
-        grid : np.ndarray
-            The energy grid for which to compute the error.
-        zenith_deg : float or str
-            The zenith angle in degrees. If a string, it must be "average".
-        quantity : str
-            The quantity to compute the error for, must be one of the accepted values.
-        only_hadronic : Optional[bool], optional
-            Whether to only include the hadronic error, by excluding the other
-            error sources, by default False.
-
-        Returns
-        -------
-        np.ndarray
-            The error of the flux estimation.
-
-        Raises
-        ------
-        Exception
-            If `zenith_deg` is "average".
-        """
-        self._check_input(grid, quantity)
-
-        if isinstance(zenith_deg, str) and zenith_deg == "average":
-            raise Exception("Need to handle this separately.")
-
-        if float(zenith_deg) in self._zenith_deg_arr:
-            zenith_deg = format_angle(zenith_deg)
-            return self._error_from_spl(grid, zenith_deg, quantity, only_hadronic)
-        else:
-            return self._error_from_interp(grid, zenith_deg, quantity)
-
     def _flux_from_spl(
         self,
         grid: np.ndarray,
         zenith_deg: str,
         quantity: str,
-        params: Dict[str, float] = {},
+        params: Dict[str, float],
     ) -> np.ndarray:
         """
         Calculate the flux based on spline representation.
@@ -474,20 +395,17 @@ class _FluxEntry(Flux):
         fl = self._fl_spl[zenith_deg]
         with self._temporary_parameters(params):
             corrections = 1 + np.sum(
-                [
-                    v * jac[dk][quantity](np.log(grid))
-                    for (dk, v) in self.params.items()
-                ],
+                [v * jac[dk][quantity](np.log(grid)) for (dk, v) in self.params],
                 axis=0,
             )
         return np.exp(fl[quantity](np.log(grid))) * corrections
 
     def _flux_from_interp(
         self,
-        grid,
-        zenith_deg,
-        quantity,
-        params={},
+        grid: np.ndarray,
+        zenith_deg: Union[float, str, np.ndarray],
+        quantity: str,
+        params: Dict[str, float],
     ) -> np.ndarray:
         from scipy.interpolate import interp1d
 
@@ -506,10 +424,10 @@ class _FluxEntry(Flux):
 
     def _error_from_spl(
         self,
-        grid,
-        zenith_deg,
-        quantity,
-        only_hadronic=False,
+        grid: np.ndarray,
+        zenith_deg: Union[float, str, np.ndarray],
+        quantity: str,
+        only_hadronic: bool,
     ) -> np.ndarray:
         if self._debug > 2:
             print(
@@ -532,10 +450,10 @@ class _FluxEntry(Flux):
 
     def _error_from_interp(
         self,
-        grid,
-        zenith_deg,
-        quantity,
-        only_hadronic=False,
+        grid: np.ndarray,
+        zenith_deg: Union[float, str, np.ndarray],
+        quantity: str,
+        only_hadronic: bool,
     ) -> np.ndarray:
         from scipy.interpolate import interp1d
 
@@ -562,13 +480,12 @@ class _FluxEntry(Flux):
             zenith_angles_deg (float or np.ndarray): Zenith angles in degrees
 
         Returns:
-            Tuple[int, int]: The indices of `_zenith_deg_arr` that correspond to the requested `zenith_angles_deg`
+            Tuple[int, int]: The indices of `_zenith_deg_arr` that correspond
+            to the requested `zenith_angles_deg`
         """
         zenith_angles_deg = np.atleast_1d(zenith_angles_deg).astype(float)
-
         if not np.all(np.diff(zenith_angles_deg) >= 0):
             raise ValueError("Requested angles must be sorted in ascending order.")
-
         if np.min(zenith_angles_deg) < np.min(self._zenith_deg_arr) or np.max(
             zenith_angles_deg
         ) > np.max(self._zenith_deg_arr):
@@ -578,7 +495,111 @@ class _FluxEntry(Flux):
                     format_angle(self._zenith_deg_arr[-1]),
                 )
             )
+        if len(self._zenith_angles) < 2:
+            raise ValueError("Zenith angle array must have at least two elements.")
+
         idxmin = np.digitize(np.min(zenith_angles_deg), self._zenith_deg_arr) - 1
         idxmax = np.digitize(np.max(zenith_angles_deg), self._zenith_deg_arr)
-
+        if idxmax - idxmin < 2:
+            idxmax += 1
+            if idxmax > len(self._zenith_deg_arr):
+                idxmin -= 1
+                idxmax -= 1
         return idxmin, idxmax
+
+    def flux(
+        self,
+        grid: np.ndarray,
+        zenith_deg: Union[float, str, np.ndarray],
+        quantity: str,
+        params: Dict[str, float] = {},
+    ) -> np.ndarray:
+        """
+        Compute the flux at the given energy grid, zenith angle, and quantity.
+
+        Parameters
+        ----------
+        grid : np.ndarray
+            The energy grid in units of GeV.
+        zenith_deg : float or str
+            The zenith angle in degrees. If "average", the average flux over all
+            zenith angles will be returned.
+        quantity : str
+            The type of flux to be returned.
+        params : Dict[str, float], optional
+            A dictionary of parameter values to use for the calculation.
+
+        Returns
+        -------
+        np.ndarray
+            The flux multiplied by E^3 in units of GeV^2/(cm^2 s sr).
+
+        Raises
+        ------
+        Exception
+            If `zenith_deg` is "average" but splines do not contain average flux.
+        """
+        self._check_input(grid, quantity)
+        # handle the case where the zenith angle is "average"
+        if isinstance(zenith_deg, str) and zenith_deg == "average":
+            if not self._spl_contains_average:
+                raise Exception("Splines do not contain average flux")
+            return self._flux_from_spl(grid, zenith_deg, quantity, params)
+
+        # handle the case where the zenith angle is a single value or an array
+        if not is_iterable(zenith_deg) and float(zenith_deg) in self._zenith_deg_arr:
+            return self._flux_from_spl(
+                grid, format_angle(float(zenith_deg)), quantity, params
+            )
+        else:
+            return self._flux_from_interp(grid, zenith_deg, quantity, params)
+
+    def error(
+        self,
+        grid: np.ndarray,
+        zenith_deg: Union[float, str],
+        quantity: str,
+        only_hadronic: bool = False,
+    ) -> np.ndarray:
+        """
+        Return the error of the flux estimation for the given parameters.
+
+        The error is multiplied by E^3 in units of GeV^2/(cm^2 s sr).
+
+        Parameters
+        ----------
+        grid : np.ndarray
+            The energy grid for which to compute the error.
+        zenith_deg : float or str
+            The zenith angle in degrees. If a string, it must be "average".
+        quantity : str
+            The quantity to compute the error for.
+        only_hadronic : bool, optional
+            Whether to only include the hadronic error, excluding the cosmic ray flux
+            error, by default False.
+
+        Returns
+        -------
+        np.ndarray
+            The error of the flux estimation.
+
+        Raises
+        ------
+        Exception
+            If `zenith_deg` is "average" but splines do not contain average flux.
+        """
+        self._check_input(grid, quantity)
+
+        # handle the case where the zenith angle is "average"
+        if isinstance(zenith_deg, str) and zenith_deg == "average":
+            if not self._spl_contains_average:
+                raise Exception("Splines do not contain average flux")
+            return self._error_from_spl(grid, zenith_deg, quantity, only_hadronic)
+
+        # handle the case where the zenith angle is a single value or an array
+        if not is_iterable(zenith_deg) and float(zenith_deg) in self._zenith_deg_arr:
+            return self._error_from_spl(
+                grid, format_angle(zenith_deg), quantity, only_hadronic
+            )
+        else:
+            return self._error_from_interp(grid, zenith_deg, quantity, only_hadronic)

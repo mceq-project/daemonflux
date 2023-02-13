@@ -1,6 +1,6 @@
 import numpy as np
 import numpy.testing as npt
-from daemonflux.flux import Parameters, _FluxEntry
+from daemonflux.flux import Parameters, _FluxEntry, Flux
 from daemonflux.utils import format_angle, rearrange_covariance, is_iterable, grid_cov
 
 
@@ -90,7 +90,9 @@ def test_rearrange_covariance():
 
 def test_interpolation_domain():
     zenith_test_dataset = np.array([0, 10, 20, 30, 40, 50, 60, 70, 80, 90], dtype=float)
-    mock_spl = dict([(format_angle(z), []) for z in zenith_test_dataset])
+    mock_spl = dict(
+        [(format_angle(z), {"numuflux": [], "muflux": []}) for z in zenith_test_dataset]
+    )
     known_parameters = ["p1", "p2"]
     values = np.array([1, 2])
     cov = np.array([[1.0, 0.5], [0.5, 1.0]])
@@ -101,7 +103,7 @@ def test_interpolation_domain():
     # entry._zenith_deg_arr = np.array([0, 10, 20, 30, 40, 50, 60, 70, 80, 90])
 
     # Test for a single angle within the range
-    assert entry._interpolation_domain(45) == (4, 5)
+    assert entry._interpolation_domain(45) == (4, 6)
 
     # Test for multiple angles within the range
     assert np.all(entry._interpolation_domain(np.array([45.0, 51.0])) == (4, 6))
@@ -129,3 +131,65 @@ def test_interpolation_domain():
         entry._interpolation_domain(np.array([50.0, 45.0]))
     except ValueError as e:
         assert str(e) == "Requested angles must be sorted in ascending order."
+
+
+def test_Flux():
+    # Creating the test splines
+    # import pickle
+
+    # (known_pars, _fl_spl, _jac_spl, GSF19_cov) = pickle.load(
+    #     open("../daemonsplines_generic_20230207.pkl", "rb")
+    # )
+
+    # test_fl_spl = {}
+    # test_fl_spl["generic"] = {}
+    # test_jac_spl = {}
+    # test_jac_spl["generic"] = {}
+    # test_known_pars = known_pars[:3] + ["GSF_1", "GSF_2"]
+    # for a in ["0.0000", "18.1949"]:
+    #     test_fl_spl["generic"][a] = {}
+    #     test_jac_spl["generic"][a] = {}
+    #     for kp in test_known_pars:
+    #         test_jac_spl["generic"][a][kp] = {}
+    # for a in ["0.0000", "18.1949"]:
+    #     test_fl_spl["generic"][a]["numuflux"] = _fl_spl["generic"][a]["numuflux"]
+    #     test_fl_spl["generic"][a]["muflux"] = _fl_spl["generic"][a]["muflux"]
+    #     for kp in test_known_pars:
+    #         test_jac_spl["generic"][a][kp] = {}
+    #         test_jac_spl["generic"][a][kp]["numuflux"] = _jac_spl["generic"][a][kp]["numuflux"]
+    #         test_jac_spl["generic"][a][kp]["muflux"] = _jac_spl["generic"][a][kp]["muflux"]
+    # test_GSF19_cov = GSF19_cov[:2, :2]
+    # pickle.dump(
+    #     [test_known_pars, test_fl_spl, test_jac_spl, test_GSF19_cov],
+    #     open("test_daemonsplines_generic_20230207.pkl", "wb"),
+    #     protocol=-1,
+    # )
+
+    import pathlib
+
+    basep = pathlib.Path(__file__).parent.absolute()
+    fl_test = Flux(
+        basep / "test_daemonsplines_generic_20230207.pkl",
+        cal_file=basep / "test_calibration_20230207.pkl",
+        use_calibration=True,
+        debug=1,
+    )
+    fl_test_nc = Flux(
+        basep / "test_daemonsplines_generic_20230207.pkl",
+        debug=1,
+    )
+    egrid = np.logspace(0, 8)
+
+    assert np.allclose(np.sum(fl_test.flux(egrid, "0.0000", "numuflux")), 0.786210673)
+    assert np.allclose(np.sum(fl_test.flux(egrid, "18.1949", "numuflux")), 0.804512178)
+    assert np.allclose(np.sum(fl_test.flux(egrid, 10, "numuflux")), 0.79177147)
+    assert np.allclose(np.sum(fl_test.flux(egrid, "0.0000", "muflux")), 3.238592629)
+    assert np.allclose(np.sum(fl_test.flux(egrid, "18.1949", "muflux")), 3.279707715)
+    assert np.allclose(np.sum(fl_test.flux(egrid, 10, "muflux")), 3.25108520)
+
+    assert np.allclose(np.sum(fl_test_nc.flux(egrid, "0.0000", "numuflux")), 0.78036953)
+    assert np.allclose(np.sum(fl_test_nc.flux(egrid, "18.1949", "numuflux")), 0.7977987)
+    assert np.allclose(np.sum(fl_test_nc.flux(egrid, 10, "numuflux")), 0.785665300)
+    assert np.allclose(np.sum(fl_test_nc.flux(egrid, "0.0000", "muflux")), 3.13908893)
+    assert np.allclose(np.sum(fl_test_nc.flux(egrid, "18.1949", "muflux")), 3.17651243)
+    assert np.allclose(np.sum(fl_test_nc.flux(egrid, 10, "muflux")), 3.15045984)
