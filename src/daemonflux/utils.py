@@ -3,7 +3,7 @@ import urllib
 import shutil
 import zipfile
 import numpy as np
-from typing import Dict
+from typing import Dict, Union
 
 
 # Quantities in daemonflux non-prefixed are conventional
@@ -26,7 +26,7 @@ quantities = [
 quantities += ["total_" + q for q in quantities]
 
 
-def format_angle(ang: float) -> str:
+def format_angle(ang: Union[float, str]) -> str:
     """
     Format the given angle to a string with 4 decimal places.
 
