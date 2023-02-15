@@ -128,12 +128,26 @@ class Flux:
             known_parameters.append(k)
 
         if cal_file is None:
+            from scipy.linalg import block_diag
+
             print("daemonflux calibration not used.")
+            num_non_gsf_params = len(
+                [p for p in known_parameters if not p.startswith("GSF")]
+            )
+            assert all(
+                [p.startswith("GSF") for p in known_parameters][num_non_gsf_params:]
+            ), "GSF parameters must be last in the list of known parameters"
+            # The jacobians are scaled to the 1 sigma errors, but the GSF19_cov is not
+            # so we need to scale it to 1 sigma, which corresponds to the definition
+            # of the correlation matrix
             self.params = Parameters(
                 known_parameters,
                 np.zeros(len(known_parameters)),
-                np.diag(np.ones(len(known_parameters))),
+                block_diag(
+                    np.diag(np.ones(num_non_gsf_params)), np.corrcoef(self.GSF19_cov)
+                ),
             )
+            assert self.params.cov.shape == (len(known_parameters),) * 2
         else:
 
             assert pathlib.Path(
@@ -244,12 +258,12 @@ class Flux:
 
     @contextmanager
     def _temporary_parameters(self, modified_params: dict):
-        from copy import copy
+        from copy import deepcopy
 
         if not modified_params:
             yield
         else:
-            prev = copy(self.params.values)
+            prev = deepcopy(self.params)
             pars = self.params
             for k in modified_params:
                 if k not in pars.known_parameters:
@@ -258,7 +272,7 @@ class Flux:
                 pars.values[par_idx] += pars.errors[par_idx] * modified_params[k]
 
             yield
-            self.params.values = prev
+            self.params = prev
 
     @contextmanager
     def _temporary_exclude_parameters(self, exclude_str):
@@ -289,6 +303,7 @@ class Flux:
             yield
 
             self.params = prev
+            assert pars.cov.shape[0] == len(pars.known_parameters) == len(pars.values)
 
 
 class _FluxEntry(Flux):
