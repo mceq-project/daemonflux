@@ -110,6 +110,7 @@ class Flux:
 
     def _load_splines(self, spl_file, cal_file):
         from .utils import rearrange_covariance
+        from copy import deepcopy
 
         assert pathlib.Path(spl_file).is_file(), f"Spline file {spl_file} not found."
         (
@@ -131,23 +132,50 @@ class Flux:
             from scipy.linalg import block_diag
 
             print("daemonflux calibration not used.")
-            num_non_gsf_params = len(
-                [p for p in known_parameters if not p.startswith("GSF")]
-            )
-            assert all(
-                [p.startswith("GSF") for p in known_parameters][num_non_gsf_params:]
-            ), "GSF parameters must be last in the list of known parameters"
-            # The jacobians are scaled to the 1 sigma errors, but the GSF19_cov is not
-            # so we need to scale it to 1 sigma, which corresponds to the definition
-            # of the correlation matrix
-            self.params = Parameters(
+
+            def make_cov():
+                num_non_gsf_params = len(
+                    [p for p in known_parameters if not p.startswith("GSF")]
+                )
+                assert all(
+                    [p.startswith("GSF") for p in known_parameters][num_non_gsf_params:]
+                ), "GSF parameters must be last in the list of known parameters"
+                # The jacobians are scaled to the 1 sigma errors, but the GSF19_cov is not
+                # so we need to scale it to 1 sigma, which corresponds to the definition
+                # of the correlation matrix
+                correlations = {
+                    "K+_158G": ["K+_2P"],
+                    "K-_158G": ["K-_2P"],
+                    "p_158G": ["p_2P"],
+                    "n_158G": ["n_2P"],
+                    "pi+_158G": ["pi+_20T", "pi+_2P"],
+                    "pi-_158G": ["pi-_20T", "pi-_2P"],
+                    "pi+_20T": ["pi+_158G", "pi+_2P"],
+                    "pi-_20T": ["pi-_158G", "pi-_2P"],
+                }
+                non_gsf_params = known_parameters[:num_non_gsf_params]
+                par_idx_map = {p: i for i, p in enumerate(non_gsf_params)}
+                cov = np.diag(num_non_gsf_params * [1.0])
+                for ip, p in enumerate(non_gsf_params):
+                    if p not in correlations:
+                        continue
+                    ncorr = len(correlations[p])
+                    for q in correlations[p]:
+                        cov[ip, par_idx_map[q]] = ncorr + 1
+                        cov[par_idx_map[q], ip] = ncorr + 1
+                        cov[ip, ip] = ncorr + 1
+
+                return block_diag(cov, np.corrcoef(self.GSF19_cov))
+
+            params = Parameters(
                 known_parameters,
                 np.zeros(len(known_parameters)),
-                block_diag(
-                    np.diag(np.ones(num_non_gsf_params)), np.corrcoef(self.GSF19_cov)
-                ),
+                make_cov(),
             )
-            assert self.params.cov.shape == (len(known_parameters),) * 2
+            assert params.cov.shape == (len(known_parameters),) * 2, (
+                f"covariance shape {params.cov.shape} is not consistent"
+                + f" with the number of parameters {len(known_parameters)}"
+            )
         else:
 
             assert pathlib.Path(
@@ -200,7 +228,7 @@ class Flux:
                         + " incorrectly sorted."
                     )
 
-            self.params = Parameters(known_parameters, np.asarray(param_values), cov)
+            params = Parameters(known_parameters, np.asarray(param_values), cov)
 
         self.supported_fluxes = []
         for exp in self._fl_spl:
@@ -208,7 +236,7 @@ class Flux:
                 exp,
                 self._fl_spl[exp],
                 self._jac_spl[exp],
-                self.params,
+                deepcopy(params),
                 self._debug,
             )
             setattr(self, exp, subflux)
@@ -240,6 +268,10 @@ class Flux:
     def quantities(self, exp=""):
         return self._get_flux_instance(exp)._quantities
 
+    @property
+    def params(self, exp=""):
+        return self._get_flux_instance(exp)._params
+
     def flux(self, grid, zenith_deg, quantity, params={}, exp=""):
         return self._get_flux_instance(exp).flux(grid, zenith_deg, quantity, params)
 
@@ -255,55 +287,6 @@ class Flux:
         if exp_label not in self.supported_fluxes:
             raise KeyError("Supported fluxes are", self.supported_fluxes)
         return self.__getattribute__(exp_label)
-
-    @contextmanager
-    def _temporary_parameters(self, modified_params: dict):
-        from copy import deepcopy
-
-        if not modified_params:
-            yield
-        else:
-            prev = deepcopy(self.params)
-            pars = self.params
-            for k in modified_params:
-                if k not in pars.known_parameters:
-                    raise KeyError(f"Cannot modify {k}, paramter unknown.")
-                par_idx = pars.known_parameters.index(k)
-                pars.values[par_idx] += pars.errors[par_idx] * modified_params[k]
-
-            yield
-            self.params = prev
-
-    @contextmanager
-    def _temporary_exclude_parameters(self, exclude_str):
-        from copy import deepcopy
-
-        if not exclude_str:
-            yield
-        else:
-            prev = deepcopy(self.params)
-            pars = self.params
-            new_kp = []
-            new_values = []
-            keep_cov = []
-            for ik, k in enumerate(pars.known_parameters):
-
-                if exclude_str in k:
-                    continue
-                new_kp.append(k)
-                new_values.append(pars.values[ik])
-                keep_cov.append(ik)
-
-            pars.cov = np.take(np.take(pars.cov, keep_cov, axis=0), keep_cov, axis=1)
-            pars.values = np.asarray(new_values)
-            pars.known_parameters = new_kp
-
-            assert pars.cov.shape[0] == len(pars.known_parameters) == len(pars.values)
-
-            yield
-
-            self.params = prev
-            assert pars.cov.shape[0] == len(pars.known_parameters) == len(pars.values)
 
 
 class _FluxEntry(Flux):
@@ -341,7 +324,7 @@ class _FluxEntry(Flux):
         self.label = label
         self._fl_spl = fl_spl
         self._jac_spl = jac_spl
-        self.params = params
+        self._params = params
         self._debug = debug
         assert self._fl_spl is not None, "Splines have to be initialized"
         assert self._jac_spl is not None, "Jacobians required for error estimate"
@@ -363,6 +346,55 @@ class _FluxEntry(Flux):
             The list of formatted zenith angles.
         """
         return [format_angle(a) for a in self._zenith_deg_arr]
+
+    @contextmanager
+    def _temporary_parameters(self, modified_params: dict):
+        from copy import deepcopy
+
+        if not modified_params:
+            yield
+        else:
+            prev = deepcopy(self._params)
+            pars = self._params
+            for k in modified_params:
+                if k not in pars.known_parameters:
+                    raise KeyError(f"Cannot modify {k}, paramter unknown.")
+                par_idx = pars.known_parameters.index(k)
+                pars.values[par_idx] += pars.errors[par_idx] * modified_params[k]
+
+            yield
+            self._params = prev
+
+    @contextmanager
+    def _temporary_exclude_parameters(self, exclude_str):
+        from copy import deepcopy
+
+        if not exclude_str:
+            yield
+        else:
+            prev = deepcopy(self._params)
+            pars = self._params
+            new_kp = []
+            new_values = []
+            keep_cov = []
+            for ik, k in enumerate(pars.known_parameters):
+
+                if exclude_str in k:
+                    continue
+                new_kp.append(k)
+                new_values.append(pars.values[ik])
+                keep_cov.append(ik)
+
+            pars.cov = np.take(np.take(pars.cov, keep_cov, axis=0), keep_cov, axis=1)
+            pars.values = np.asarray(new_values)
+            pars.known_parameters = new_kp
+
+            assert pars.cov.shape[0] == len(pars.known_parameters) == len(pars.values)
+
+            yield
+
+            self._params = prev
+            assert pars.cov.shape[0] == len(pars.known_parameters) == len(pars.values)
 
     def _check_input(self, grid: np.ndarray, quantity: str) -> None:
         """
@@ -410,7 +442,7 @@ class _FluxEntry(Flux):
         fl = self._fl_spl[zenith_deg]
         with self._temporary_parameters(params):
             corrections = 1 + np.sum(
-                [v * jac[dk][quantity](np.log(grid)) for (dk, v) in self.params],
+                [v * jac[dk][quantity](np.log(grid)) for (dk, v) in self._params],
                 axis=0,
             )
         return np.exp(fl[quantity](np.log(grid))) * corrections
@@ -457,10 +489,10 @@ class _FluxEntry(Flux):
             jacfl = np.vstack(
                 [
                     jac[par][quantity](np.log(grid))
-                    for par in self.params.known_parameters
+                    for par in self._params.known_parameters
                 ]
             ).T
-            error = np.sqrt(np.diag(self._get_grid_cov(jacfl, self.params.cov)))
+            error = np.sqrt(np.diag(self._get_grid_cov(jacfl, self._params.cov)))
             return np.exp(self._fl_spl[zenith_deg][quantity](np.log(grid))) * error
 
     def _error_from_interp(
