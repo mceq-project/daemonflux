@@ -117,7 +117,7 @@ class Flux:
             known_pars,
             self._fl_spl,
             self._jac_spl,
-            self.GSF19_cov,
+            cov,
         ) = pickle.load(open(spl_file, "rb"))
 
         known_parameters = []
@@ -129,48 +129,12 @@ class Flux:
             known_parameters.append(k)
 
         if cal_file is None:
-            from scipy.linalg import block_diag
-
             print("daemonflux calibration not used.")
-
-            def make_cov():
-                num_non_gsf_params = len(
-                    [p for p in known_parameters if not p.startswith("GSF")]
-                )
-                assert all(
-                    [p.startswith("GSF") for p in known_parameters][num_non_gsf_params:]
-                ), "GSF parameters must be last in the list of known parameters"
-                # The jacobians are scaled to the 1 sigma errors, but the GSF19_cov is not
-                # so we need to scale it to 1 sigma, which corresponds to the definition
-                # of the correlation matrix
-                correlations = {
-                    "K+_158G": ["K+_2P"],
-                    "K-_158G": ["K-_2P"],
-                    "p_158G": ["p_2P"],
-                    "n_158G": ["n_2P"],
-                    "pi+_158G": ["pi+_20T", "pi+_2P"],
-                    "pi-_158G": ["pi-_20T", "pi-_2P"],
-                    "pi+_20T": ["pi+_158G", "pi+_2P"],
-                    "pi-_20T": ["pi-_158G", "pi-_2P"],
-                }
-                non_gsf_params = known_parameters[:num_non_gsf_params]
-                par_idx_map = {p: i for i, p in enumerate(non_gsf_params)}
-                cov = np.diag(num_non_gsf_params * [1.0])
-                for ip, p in enumerate(non_gsf_params):
-                    if p not in correlations:
-                        continue
-                    ncorr = len(correlations[p])
-                    for q in correlations[p]:
-                        cov[ip, par_idx_map[q]] = ncorr + 1
-                        cov[par_idx_map[q], ip] = ncorr + 1
-                        cov[ip, ip] = ncorr + 1
-
-                return block_diag(cov, np.corrcoef(self.GSF19_cov))
 
             params = Parameters(
                 known_parameters,
                 np.zeros(len(known_parameters)),
-                make_cov(),
+                cov,
             )
             assert params.cov.shape == (len(known_parameters),) * 2, (
                 f"covariance shape {params.cov.shape} is not consistent"
