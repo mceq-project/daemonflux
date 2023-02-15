@@ -335,7 +335,7 @@ class _FluxEntry(Flux):
         self._zenith_deg_arr = np.asarray([float(a) for a in self._zenith_angles])
         self._zenith_deg_arr.sort()
         self._zenith_cos_arr = np.cos(np.deg2rad(self._zenith_deg_arr))
-        self._quantities = list(self._fl_spl[self._zenith_angles[0]].keys())
+        self._quantities = list(self._fl_spl[list(self._fl_spl.keys())[0]].keys())
 
     @property
     def zenith_angles(self) -> list:
