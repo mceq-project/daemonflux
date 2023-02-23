@@ -10,6 +10,8 @@ Daemonflux is a tabulated/splined version of the an atmospheric flux model calib
 
 `pip install daemonflux`
 
+The code currently requires the spline files in binary format from us. The files will be made available once the work is submitted to the journal.
+
 ## Usage
 
 Follow the [example](examples/example.ipynb).
