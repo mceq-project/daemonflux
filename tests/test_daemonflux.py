@@ -133,7 +133,7 @@ def test_interpolation_domain():
         assert str(e) == "Requested angles must be sorted in ascending order."
 
 
-# # Creating the test splines
+# # Creating the test splines from one of the files
 # import pickle
 
 # (known_pars, _fl_spl, _jac_spl, cov) = pickle.load(
@@ -197,10 +197,11 @@ def test_interpolation_domain():
 # plt.spy(cov)
 
 # plt.gca().set_xticks(np.arange(0.5, len(fl_ic_nc.params.known_parameters[:-6])+0.5,1))
-# plt.gca().set_xticklabels(fl_ic_nc.params.known_parameters[:-6], rotation=45, fontsize=8)
+# plt.gca().set_xticklabels(fl_ic_nc.params.known_parameters[:-6],
+#   rotation=45, fontsize=8)
 # plt.gca().set_yticks(np.arange(0.5, len(fl_ic_nc.params.known_parameters[:-6])+0.5,1))
-# plt.gca().set_yticklabels(fl_ic_nc.params.known_parameters[:-6], rotation=45, fontsize=8)
-
+# plt.gca().set_yticklabels(fl_ic_nc.params.known_parameters[:-6],
+#   rotation=45, fontsize=8)
 
 
 def test_Flux():
@@ -208,12 +209,14 @@ def test_Flux():
 
     basep = pathlib.Path(__file__).parent.absolute()
     fl_test = Flux(
+        "",
         basep / "test_daemonsplines_generic_20230207.pkl",
         cal_file=basep / "test_calibration_20230207.pkl",
         use_calibration=True,
         debug=1,
     )
     fl_test_nc = Flux(
+        "",
         basep / "test_daemonsplines_generic_20230207.pkl",
         debug=1,
     )
@@ -226,42 +229,90 @@ def test_Flux():
     assert np.allclose(np.sum(fl_test.flux(egrid, "18.1949", "muflux")), 3.279707715)
     assert np.allclose(np.sum(fl_test.flux(egrid, 10, "muflux")), 3.25108520)
 
-    assert np.allclose(np.sum(fl_test_nc.flux(egrid, "0.0000", "numuflux")), 0.78036953)
-    assert np.allclose(np.sum(fl_test_nc.flux(egrid, "18.1949", "numuflux")), 0.7977987)
-    assert np.allclose(np.sum(fl_test_nc.flux(egrid, 10, "numuflux")), 0.785665300)
-    assert np.allclose(np.sum(fl_test_nc.flux(egrid, "0.0000", "muflux")), 3.13908893)
-    assert np.allclose(np.sum(fl_test_nc.flux(egrid, "18.1949", "muflux")), 3.17651243)
-    assert np.allclose(np.sum(fl_test_nc.flux(egrid, 10, "muflux")), 3.15045984)
+    assert np.allclose(np.sum(fl_test_nc.flux(egrid, "0.0000", "numuflux")), 0.79125183)
+    assert np.allclose(
+        np.sum(fl_test_nc.flux(egrid, "18.1949", "numuflux")), 0.80971095
+    )
+    assert np.allclose(np.sum(fl_test_nc.flux(egrid, 10, "numuflux")), 0.79686052)
+    assert np.allclose(np.sum(fl_test_nc.flux(egrid, "0.0000", "muflux")), 3.2447125)
+    assert np.allclose(np.sum(fl_test_nc.flux(egrid, "18.1949", "muflux")), 3.2860174)
+    assert np.allclose(np.sum(fl_test_nc.flux(egrid, 10, "muflux")), 3.2572628)
+
+    # Test that fluxes are different when using calibration
+    assert np.sum(fl_test.flux(egrid, "0.0000", "numuflux")) != np.sum(
+        fl_test_nc.flux(egrid, "0.0000", "numuflux")
+    )
+    assert np.sum(fl_test.flux(egrid, "18.1949", "numuflux")) != np.sum(
+        fl_test_nc.flux(egrid, "18.1949", "numuflux")
+    )
+    assert np.sum(fl_test.flux(egrid, 10, "numuflux")) != np.sum(
+        fl_test_nc.flux(egrid, 10, "numuflux")
+    )
+    assert np.sum(fl_test.flux(egrid, "0.0000", "muflux")) != np.sum(
+        fl_test_nc.flux(egrid, "0.0000", "muflux")
+    )
+    assert np.sum(fl_test.flux(egrid, "18.1949", "muflux")) != np.sum(
+        fl_test_nc.flux(egrid, "18.1949", "muflux")
+    )
+    assert np.sum(fl_test.flux(egrid, 10, "muflux")) != np.sum(
+        fl_test_nc.flux(egrid, 10, "muflux")
+    )
 
 
-# def test_errors():
-#     import pathlib
+def test_Flux_error():
+    import pathlib
 
-#     basep = pathlib.Path(__file__).parent.absolute()
-#     fl_test = Flux(
-#         basep / "test_daemonsplines_generic_20230207.pkl",
-#         cal_file=basep / "test_calibration_20230207.pkl",
-#         use_calibration=True,
-#         debug=1,
-#     )
-#     fl_test_nc = Flux(
-#         basep / "test_daemonsplines_generic_20230207.pkl",
-#         debug=1,
-#     )
-#     egrid = np.logspace(0, 8)
+    basep = pathlib.Path(__file__).parent.absolute()
+    fl_test = Flux(
+        "",
+        basep / "test_daemonsplines_generic_20230207.pkl",
+        cal_file=basep / "test_calibration_20230207.pkl",
+        use_calibration=True,
+        debug=1,
+    )
+    fl_test_nc = Flux(
+        "",
+        basep / "test_daemonsplines_generic_20230207.pkl",
+        debug=1,
+    )
+    egrid = np.logspace(0, 8)
 
-#     assert np.allclose(np.sum(fl_test.error(egrid, "0.0000", "numuflux")),
-#       0.786210673)
-#     assert np.allclose(np.sum(fl_test.error(egrid, 10, "numuflux")), 0.79177147)
-#     assert np.allclose(
-#         np.sum(fl_test.error(egrid, "0.0000", "numuflux", only_hadronic=True)),
-#         3.238592629,
-#     )
-#     assert np.allclose(
-#         np.sum(fl_test_nc.error(egrid, "0.0000", "numuflux")), 0.786210673
-#     )
-#     assert np.allclose(np.sum(fl_test_nc.error(egrid, 10, "numuflux")), 0.79177147)
-#     assert np.allclose(
-#         np.sum(fl_test_nc.error(egrid, "0.0000", "numuflux", only_hadronic=True)),
-#         3.238592629,
-#     )
+    assert np.allclose(np.sum(fl_test.error(egrid, "0.0000", "numuflux")), 0.0395929433)
+    assert np.allclose(
+        np.sum(fl_test.error(egrid, "18.1949", "numuflux")), 0.0405816962
+    )
+    assert np.allclose(np.sum(fl_test.error(egrid, 10, "numuflux")), 0.03989337000)
+    assert np.allclose(np.sum(fl_test.error(egrid, "0.0000", "muflux")), 0.0878357001)
+    assert np.allclose(np.sum(fl_test.error(egrid, "18.1949", "muflux")), 0.0900900643)
+    assert np.allclose(np.sum(fl_test.error(egrid, 10, "muflux")), 0.088520675)
+
+    assert np.allclose(
+        np.sum(fl_test_nc.error(egrid, "0.0000", "numuflux")), 0.032414602
+    )
+    assert np.allclose(
+        np.sum(fl_test_nc.error(egrid, "18.1949", "numuflux")), 0.033177731
+    )
+    assert np.allclose(np.sum(fl_test_nc.error(egrid, 10, "numuflux")), 0.032646475)
+    assert np.allclose(np.sum(fl_test_nc.error(egrid, "0.0000", "muflux")), 0.08363886)
+    assert np.allclose(np.sum(fl_test_nc.error(egrid, "18.1949", "muflux")), 0.08576660)
+    assert np.allclose(np.sum(fl_test_nc.error(egrid, 10, "muflux")), 0.0842853664)
+
+    # Test that errors are different depending on whether calibration is used
+    assert np.sum(fl_test.error(egrid, "0.0000", "numuflux")) != np.sum(
+        fl_test_nc.error(egrid, "0.0000", "numuflux")
+    )
+    assert np.sum(fl_test.error(egrid, "18.1949", "numuflux")) != np.sum(
+        fl_test_nc.error(egrid, "18.1949", "numuflux")
+    )
+    assert np.sum(fl_test.error(egrid, 10, "numuflux")) != np.sum(
+        fl_test_nc.error(egrid, 10, "numuflux")
+    )
+    assert np.sum(fl_test.error(egrid, "0.0000", "muflux")) != np.sum(
+        fl_test_nc.error(egrid, "0.0000", "muflux")
+    )
+    assert np.sum(fl_test.error(egrid, "18.1949", "muflux")) != np.sum(
+        fl_test_nc.error(egrid, "18.1949", "muflux")
+    )
+    assert np.sum(fl_test.error(egrid, 10, "muflux")) != np.sum(
+        fl_test_nc.error(egrid, 10, "muflux")
+    )

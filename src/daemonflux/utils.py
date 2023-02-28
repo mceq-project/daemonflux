@@ -1,6 +1,5 @@
 from pathlib import Path
 import urllib
-import shutil
 import zipfile
 import numpy as np
 from typing import Dict, Union
@@ -144,28 +143,17 @@ def _cached_data_dir(url):
     base_dir = Path(__file__).parent.absolute() / "data"
     base_dir.mkdir(parents=True, exist_ok=True)
 
-    vname = Path(url).stem
-    model_dir = base_dir / vname.split("_v")[0]
-    version_file = model_dir / vname
-    if not version_file.exists():
-        zip_file = base_dir / Path(url).name
-        temp_dir = Path(model_dir.parent / f".{model_dir.name}")
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        if model_dir.exists():
-            shutil.move(str(model_dir), str(temp_dir))
-        _download_file(zip_file, url)
-        if zipfile.is_zipfile(zip_file):
-            with zipfile.ZipFile(zip_file, "r") as zf:
-                zf.extractall(base_dir.as_posix())
-            zip_file.unlink()
-            shutil.rmtree(temp_dir, ignore_errors=True)
+    fname = Path(url).stem + ".pkl"
+    full_path = base_dir / fname
+    if not full_path.exists():
+        zip_fname = base_dir / Path(url + ".zip").name
+        _download_file(zip_fname, url + ".zip")
+        if zipfile.is_zipfile(zip_fname):
+            with zipfile.ZipFile(zip_fname, "r") as zf:
+                zf.extractall(base_dir)
+            zip_fname.unlink()
 
-        version_glob = vname.split("_v")[0]
-        for vfile in model_dir.glob(f"{version_glob}_v*"):
-            vfile.unlink
-        with open(version_file, "w") as vf:
-            vf.write(url)
-    return str(model_dir) + "/"
+    return str(full_path)
 
 
 def rearrange_covariance(

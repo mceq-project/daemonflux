@@ -2,7 +2,7 @@ from typing import Dict, Union, Tuple, Generator, List
 import numpy as np
 import pickle
 import pathlib
-from .utils import grid_cov, is_iterable, format_angle
+from .utils import grid_cov, is_iterable, format_angle, _cached_data_dir
 from contextlib import contextmanager
 
 # # Anatoli's installation requires me to add this
@@ -88,25 +88,40 @@ class Parameters:
 
 
 class Flux:
-    # _data_dir = pathlib.Path(base_path, "data")
-    # _default_spl_file = _data_dir / "daemonspl_20221115.pkl"
-    # _default_cal_file = _data_dir / "daemoncal_20221115_0.pkl"
+    _default_url = (
+        "https://github.com/mceq-project/daemonflux/releases/download/v0.4.1/"
+    )
+    _default_spl_file = "daemonsplines_{0}_202303_0.pkl"
+    _default_cal_file = "daemonsplines_calibration_202303_0.pkl"
 
     def __init__(
-        self, spl_file=None, cal_file=None, use_calibration=True, exclude=[], debug=1
+        self,
+        location="generic",
+        spl_file=None,
+        cal_file=None,
+        use_calibration=True,
+        exclude=[],
+        debug=1,
     ) -> None:
         self.exclude = exclude
         self._debug = debug
-        # spl_file = spl_file  if spl_file else self._default_spl_file
-        # cal_file = cal_file  if cal_file else self._default_cal_file
+        spl_file = (
+            spl_file
+            if spl_file
+            else _cached_data_dir(
+                self._default_url + self._default_spl_file.format(location)
+            )
+        )
+        cal_file = (
+            cal_file
+            if cal_file
+            else _cached_data_dir(self._default_url + self._default_cal_file)
+        )
 
         if not use_calibration:
             cal_file = None
 
         self._load_splines(spl_file, cal_file)
-
-    def _get_grid_cov(self, jac, cov):
-        return np.dot(jac, np.dot(cov, jac.T))
 
     def _load_splines(self, spl_file, cal_file):
         from .utils import rearrange_covariance
@@ -129,7 +144,7 @@ class Flux:
             known_parameters.append(k)
 
         if cal_file is None:
-            print("daemonflux calibration not used.")
+            print("No calibration used.")
 
             params = Parameters(
                 known_parameters,
@@ -456,7 +471,7 @@ class _FluxEntry(Flux):
                     for par in self._params.known_parameters
                 ]
             ).T
-            error = np.sqrt(np.diag(self._get_grid_cov(jacfl, self._params.cov)))
+            error = np.sqrt(np.diag(grid_cov(jacfl, self._params.cov)))
             return np.exp(self._fl_spl[zenith_deg][quantity](np.log(grid))) * error
 
     def _error_from_interp(
