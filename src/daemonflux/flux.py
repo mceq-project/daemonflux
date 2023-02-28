@@ -112,14 +112,10 @@ class Flux:
                 self._default_url + self._default_spl_file.format(location)
             )
         )
-        cal_file = (
-            cal_file
-            if cal_file
-            else _cached_data_dir(self._default_url + self._default_cal_file)
-        )
-
         if not use_calibration:
             cal_file = None
+        elif use_calibration and cal_file is None:
+            cal_file = _cached_data_dir(self._default_url + self._default_cal_file)
 
         self._load_splines(spl_file, cal_file)
 

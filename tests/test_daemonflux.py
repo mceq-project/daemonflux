@@ -210,14 +210,15 @@ def test_Flux():
     basep = pathlib.Path(__file__).parent.absolute()
     fl_test = Flux(
         "",
-        basep / "test_daemonsplines_generic_20230207.pkl",
+        spl_file=basep / "test_daemonsplines_generic_20230207.pkl",
         cal_file=basep / "test_calibration_20230207.pkl",
         use_calibration=True,
         debug=1,
     )
     fl_test_nc = Flux(
         "",
-        basep / "test_daemonsplines_generic_20230207.pkl",
+        spl_file=basep / "test_daemonsplines_generic_20230207.pkl",
+        use_calibration=False,
         debug=1,
     )
     egrid = np.logspace(0, 8)
@@ -229,14 +230,12 @@ def test_Flux():
     assert np.allclose(np.sum(fl_test.flux(egrid, "18.1949", "muflux")), 3.279707715)
     assert np.allclose(np.sum(fl_test.flux(egrid, 10, "muflux")), 3.25108520)
 
-    assert np.allclose(np.sum(fl_test_nc.flux(egrid, "0.0000", "numuflux")), 0.79125183)
-    assert np.allclose(
-        np.sum(fl_test_nc.flux(egrid, "18.1949", "numuflux")), 0.80971095
-    )
-    assert np.allclose(np.sum(fl_test_nc.flux(egrid, 10, "numuflux")), 0.79686052)
-    assert np.allclose(np.sum(fl_test_nc.flux(egrid, "0.0000", "muflux")), 3.2447125)
-    assert np.allclose(np.sum(fl_test_nc.flux(egrid, "18.1949", "muflux")), 3.2860174)
-    assert np.allclose(np.sum(fl_test_nc.flux(egrid, 10, "muflux")), 3.2572628)
+    assert np.allclose(np.sum(fl_test_nc.flux(egrid, "0.0000", "numuflux")), 0.7803695)
+    assert np.allclose(np.sum(fl_test_nc.flux(egrid, "18.1949", "numuflux")), 0.7977987)
+    assert np.allclose(np.sum(fl_test_nc.flux(egrid, 10, "numuflux")), 0.7856653)
+    assert np.allclose(np.sum(fl_test_nc.flux(egrid, "0.0000", "muflux")), 3.1390889)
+    assert np.allclose(np.sum(fl_test_nc.flux(egrid, "18.1949", "muflux")), 3.176512)
+    assert np.allclose(np.sum(fl_test_nc.flux(egrid, 10, "muflux")), 3.1504598)
 
     # Test that fluxes are different when using calibration
     assert np.sum(fl_test.flux(egrid, "0.0000", "numuflux")) != np.sum(
@@ -265,14 +264,15 @@ def test_Flux_error():
     basep = pathlib.Path(__file__).parent.absolute()
     fl_test = Flux(
         "",
-        basep / "test_daemonsplines_generic_20230207.pkl",
+        spl_file=basep / "test_daemonsplines_generic_20230207.pkl",
         cal_file=basep / "test_calibration_20230207.pkl",
         use_calibration=True,
         debug=1,
     )
     fl_test_nc = Flux(
         "",
-        basep / "test_daemonsplines_generic_20230207.pkl",
+        spl_file=basep / "test_daemonsplines_generic_20230207.pkl",
+        use_calibration=False,
         debug=1,
     )
     egrid = np.logspace(0, 8)
@@ -287,15 +287,17 @@ def test_Flux_error():
     assert np.allclose(np.sum(fl_test.error(egrid, 10, "muflux")), 0.088520675)
 
     assert np.allclose(
-        np.sum(fl_test_nc.error(egrid, "0.0000", "numuflux")), 0.032414602
+        np.sum(fl_test_nc.error(egrid, "0.0000", "numuflux")), 0.029106047
     )
     assert np.allclose(
-        np.sum(fl_test_nc.error(egrid, "18.1949", "numuflux")), 0.033177731
+        np.sum(fl_test_nc.error(egrid, "18.1949", "numuflux")), 0.0296280658
     )
-    assert np.allclose(np.sum(fl_test_nc.error(egrid, 10, "numuflux")), 0.032646475)
-    assert np.allclose(np.sum(fl_test_nc.error(egrid, "0.0000", "muflux")), 0.08363886)
-    assert np.allclose(np.sum(fl_test_nc.error(egrid, "18.1949", "muflux")), 0.08576660)
-    assert np.allclose(np.sum(fl_test_nc.error(egrid, 10, "muflux")), 0.0842853664)
+    assert np.allclose(np.sum(fl_test_nc.error(egrid, 10, "numuflux")), 0.0292646598)
+    assert np.allclose(np.sum(fl_test_nc.error(egrid, "0.0000", "muflux")), 0.077694126)
+    assert np.allclose(
+        np.sum(fl_test_nc.error(egrid, "18.1949", "muflux")), 0.079532361
+    )
+    assert np.allclose(np.sum(fl_test_nc.error(egrid, 10, "muflux")), 0.078252663)
 
     # Test that errors are different depending on whether calibration is used
     assert np.sum(fl_test.error(egrid, "0.0000", "numuflux")) != np.sum(
@@ -325,9 +327,9 @@ def test_default_url():
     basep = pathlib.Path(__file__).parent.absolute()
     fl_test = Flux(
         "",
-        basep / "test_daemonsplines_generic_20230207.pkl",
+        spl_file=basep / "test_daemonsplines_generic_20230207.pkl",
         cal_file=basep / "test_calibration_20230207.pkl",
-        use_calibration=True,
+        use_calibration=False,
         debug=1,
     )
     # test that the default url is reached
