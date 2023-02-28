@@ -321,7 +321,7 @@ def test_Flux_error():
 
 
 def test_default_url():
-    import requests
+    from urllib import request
     import pathlib
 
     basep = pathlib.Path(__file__).parent.absolute()
@@ -338,5 +338,5 @@ def test_default_url():
         fl_test._default_url + fl_test._default_spl_file.format("generic") + ".zip"
     )
     url_cal = fl_test._default_url + fl_test._default_cal_file + ".zip"
-    assert requests.head(url_generic_spl).status_code in [200, 302]
-    assert requests.head(url_cal).status_code in [200, 302]
+    assert request.urlopen(url_generic_spl).status in [200, 302]
+    assert request.urlopen(url_cal).status in [200, 302]
