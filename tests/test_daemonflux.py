@@ -316,3 +316,25 @@ def test_Flux_error():
     assert np.sum(fl_test.error(egrid, 10, "muflux")) != np.sum(
         fl_test_nc.error(egrid, 10, "muflux")
     )
+
+
+def test_default_url():
+    import requests
+    import pathlib
+
+    basep = pathlib.Path(__file__).parent.absolute()
+    fl_test = Flux(
+        "",
+        basep / "test_daemonsplines_generic_20230207.pkl",
+        cal_file=basep / "test_calibration_20230207.pkl",
+        use_calibration=True,
+        debug=1,
+    )
+    # test that the default url is reached
+
+    url_generic_spl = (
+        fl_test._default_url + fl_test._default_spl_file.format("generic") + ".zip"
+    )
+    url_cal = fl_test._default_url + fl_test._default_cal_file + ".zip"
+    assert requests.head(url_generic_spl).status_code in [200, 302]
+    assert requests.head(url_cal).status_code in [200, 302]
