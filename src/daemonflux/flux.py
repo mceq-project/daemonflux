@@ -91,8 +91,9 @@ class Flux:
     _default_url = (
         "https://github.com/mceq-project/daemonflux/releases/download/v0.4.1/"
     )
-    _default_spl_file = "daemonsplines_{0}_202303_0.pkl"
-    _default_cal_file = "daemonsplines_calibration_202303_0.pkl"
+    _default_spl_file = "daemonsplines_{location}_{rev}.pkl"
+    _default_cal_file = "daemonsplines_calibration_{rev}.pkl"
+    _revision = "202303_1"
 
     def __init__(
         self,
@@ -101,6 +102,7 @@ class Flux:
         cal_file=None,
         use_calibration=True,
         exclude=[],
+        keep_old_revisions=False,
         debug=1,
     ) -> None:
         self.exclude = exclude
@@ -109,15 +111,28 @@ class Flux:
             spl_file
             if spl_file
             else _cached_data_dir(
-                self._default_url + self._default_spl_file.format(location)
+                self._default_url
+                + self._default_spl_file.format(location=location, rev=self._revision)
             )
         )
         if not use_calibration:
             cal_file = None
         elif use_calibration and cal_file is None:
-            cal_file = _cached_data_dir(self._default_url + self._default_cal_file)
+            cal_file = _cached_data_dir(
+                self._default_url + self._default_cal_file.format(rev=self._revision)
+            )
 
         self._load_splines(spl_file, cal_file)
+        if not keep_old_revisions:
+            self._cleanup_old_revisions()
+
+    def _cleanup_old_revisions(self):
+        import pathlib
+
+        for f in pathlib.Path(base_path / "data").glob("daemonsplines*"):
+            if self._revision not in str(f):
+                print("Removing old version", f)
+                f.unlink()
 
     def _load_splines(self, spl_file, cal_file):
         from .utils import rearrange_covariance
@@ -129,7 +144,7 @@ class Flux:
             self._fl_spl,
             self._jac_spl,
             cov,
-        ) = pickle.load(open(spl_file, "rb"))
+        ) = pickle.load(open(spl_file, "rb"))[:4]
 
         known_parameters = []
         for k in known_pars:
