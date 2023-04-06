@@ -229,9 +229,14 @@ class Flux:
             setattr(self, exp, subflux)
             self.supported_fluxes.append(exp)
 
-    def print_experiments(self):
+    def __repr__(self):
+        s = ""
         for exp in self._fl_spl:
-            print("{0}: [{1}]".format(exp, ", ".join(self._fl_spl[exp].keys())))
+            s += "{0}: [{1}]\n".format(exp, ", ".join(self._fl_spl[exp].keys()))
+        return s
+
+    def print_experiments(self):
+        print(self.__repr__())
 
     @property
     def zenith_angles(self, exp=""):
