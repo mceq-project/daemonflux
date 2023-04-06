@@ -89,7 +89,7 @@ class Parameters:
 
 class Flux:
     _default_url = (
-        "https://github.com/mceq-project/daemonflux/releases/download/v0.4.1/"
+        "https://github.com/mceq-project/daemonflux/releases/download/prerelease/"
     )
     _default_spl_file = "daemonsplines_{location}_{rev}.pkl"
     _default_cal_file = "daemonsplines_calibration_{rev}.pkl"
@@ -139,12 +139,9 @@ class Flux:
         from copy import deepcopy
 
         assert pathlib.Path(spl_file).is_file(), f"Spline file {spl_file} not found."
-        (
-            known_pars,
-            self._fl_spl,
-            self._jac_spl,
-            cov,
-        ) = pickle.load(open(spl_file, "rb"))[:4]
+        (known_pars, self._fl_spl, self._jac_spl, cov,) = pickle.load(
+            open(spl_file, "rb")
+        )[:4]
 
         known_parameters = []
         for k in known_pars:
