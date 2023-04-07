@@ -55,7 +55,7 @@ Resulting in the following figure:
 
 ## Explanation of quantities and units
 
-For **neutrinos**, the methods `Flux.flux` and `Flux.error` return values in the units of $(E/\text{GeV})^3/(\text{GeV}~\text{cm}^2~\text{s}~\text{sr})$, i.e. multiplied by $E^3$. For **muon quantities** are reported as a function of total momentum instead of energy, i.e. the units are  $(p/\text{(GeV/c)})^3/(\text{(GeV/c)}~\text{cm}^2~\text{s}~\text{sr})$. Natural units $\hbar=c=1$ are used everywhere.
+For **neutrinos**, the methods `Flux.flux` and `Flux.error` return values in the units of $(E/\text{GeV})^3/(\text{GeV }\text{s }\text{sr }\text{cm}^2)$, i.e. multiplied by $E^3$. For **muon quantities** are reported as a function of total momentum instead of energy, i.e. the units are  $(p/\text{(GeV/c)})^3/(\text{(GeV/c) } \text{s }\text{sr }\text{cm}^2)$. Natural units $\hbar=c=1$ are used everywhere.
 
 The quantities are: 
 
