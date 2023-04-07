@@ -156,7 +156,7 @@ def test_flux_not_calibrated():
     basep = pathlib.Path(__file__).parent.absolute()
     return Flux(
         "",
-        spl_file=basep / "test_daemonsplines_generic_20230207.pkl",
+        spl_file=basep / "test_daemonsplines_generic_202303_1.pkl",
         cal_file=basep / "test_calibration_202303_1.pkl",
         use_calibration=False,
         debug=1,
