@@ -1,6 +1,18 @@
 # daemonflux: DAta-drivEn and MuOn-calibrated Neutrino flux
 
-Daemonflux is a tabulated/splined version of the an atmospheric flux model calibrated on muon spectrometer data.
+Daemonflux is a tabulated/splined version of the an atmospheric flux model calibrated on muon spectrometer data. For the details about how daemonflux is built and calibrated to muon data [the following publication](https://inspirehep.net/literature/2637710).
+
+```
+@article{Yanez:2023lsy,
+    author = "Ya\~nez, Juan Pablo and Fedynitch, Anatoli",
+    title = "{daemonflux: DAta-drivEn MuOn-calibrated Neutrino Flux}",
+    eprint = "2303.00022",
+    archivePrefix = "arXiv",
+    primaryClass = "hep-ph",
+    month = "2",
+    year = "2023"
+}
+```
 
 ## Requirements
  * `Python > 3.7`, `numpy`, `scipy`
@@ -18,9 +30,9 @@ $ cd daemonflux
 $ python3 -m pip install -e .
 ```
 
-## Usage
+## Quickstart
 
-Follow the [example](examples/example.ipynb), where more features are demonstrated. But in a nutshell, calculating calibrated fluxes from the provided tables works like:
+To see more features and a detailed example, refer to the [example](examples/example.ipynb) notebook. In summary, the process of calculating calibrated fluxes from the provided tables is as follows:
 
     from daemonflux import Flux
     import numpy as np
@@ -40,9 +52,20 @@ Resulting in the following figure:
 
 ![Muon Neutrino Flux plot](flux_example.png "Muon neutrino flux scaled by $E^3$ for clarity.")
 
-## Citation
 
-Coming soon.
+## Explanation of quantities and units
+
+For **neutrinos**, the methods `Flux.flux` and `Flux.error` return values in the units of $(E/\text{GeV})^3/(\text{GeV}~\text{cm}^2~\text{s}~\text{sr})$, i.e. multiplied by $E^3$. For **muon quantities** are reported as a function of total momentum instead of energy, i.e. the units are  $(p/\text{(GeV/c)})^3/(\text{(GeV/c)}~\text{cm}^2~\text{s}~\text{sr})$. Natural units $\hbar=c=1$ are used everywhere.
+
+The quantities are: 
+
+- muons: `muflux`, `muratio`, `mu+`, `mu-`,
+- muon neutrinos: `numuflux`, `numuratio`, `numu`, `antinumu`, `flavorratio`
+- electron neutrinos: `nueflux`, `nueratio`, `nue`, `antinue`, `flavorratio`
+
+Those titled XXXflux are the sum of particle and antiparticle fluxes `numuflux = numu + antinumu`, the ratio is `numuratio = numu/antinumu`, and the is defined as `flavorratio = (numu + antinumu)/(nue + antinue)`.
+
+The `total_` quantities, such as `total_muflux`, represent the total flux, which includes both conventional and prompt atmospheric fluxes. However, unlike the conventional flux, the prompt flux is not calibrated using the daemonflux method, as surface muons are not sensitive to prompt fluxes. As a result, the prompt component does not include correction parameters or errors. It is important to note, however, that the conventional part of the flux remains calibrated, so the total_ flux is simply the sum of the calibrated conventional and uncalibrated prompt fluxes.
 
 ## LICENSE
 
