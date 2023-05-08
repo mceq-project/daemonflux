@@ -6,7 +6,7 @@ import sys
 __version__ = version("daemonflux")
 __all__ = ["Flux", "__version__"]
 
-if int(scipy_version.split(".")[2]) < 8:
+if int(scipy_version.split(".")[1]) < 8:
     sys.modules["scipy.interpolate._fitpack2"] = sys.modules[
         "scipy.interpolate.fitpack2"
     ]
