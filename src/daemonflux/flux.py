@@ -538,7 +538,11 @@ class _FluxEntry(Flux):
             raise ValueError("Zenith angle array must have at least two elements.")
 
         idxmin = np.digitize(np.min(zenith_angles_deg), self._zenith_deg_arr) - 1
-        idxmax = np.digitize(np.max(zenith_angles_deg), self._zenith_deg_arr)
+        idxmax = min(
+            len(self._zenith_deg_arr),
+            np.digitize(np.max(zenith_angles_deg), self._zenith_deg_arr) + 1,
+        )
+        assert self._zenith_deg_arr[idxmax - 1] >= np.max(zenith_angles_deg)
         if idxmax - idxmin < 2:
             idxmax += 1
             if idxmax > len(self._zenith_deg_arr):
