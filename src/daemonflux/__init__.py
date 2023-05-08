@@ -1,7 +1,8 @@
+import sys
 from daemonflux.flux import Flux
 from importlib.metadata import version
 from scipy.version import version as scipy_version
-import sys
+import scipy.interpolate  # noqa: F401
 
 __version__ = version("daemonflux")
 __all__ = ["Flux", "__version__"]
