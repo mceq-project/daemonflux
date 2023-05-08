@@ -91,7 +91,7 @@ def test_rearrange_covariance():
 
 
 def test_interpolation_domain():
-    zenith_test_dataset = np.array([0, 10, 20, 30, 40, 50, 60, 70, 80, 90], dtype=float)
+    zenith_test_dataset = np.array([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100], dtype=float)
     mock_spl = dict(
         [(format_angle(z), {"numuflux": [], "muflux": []}) for z in zenith_test_dataset]
     )
@@ -102,13 +102,12 @@ def test_interpolation_domain():
     entry = _FluxEntry(
         "mock", fl_spl=mock_spl, jac_spl=mock_spl, params=params, debug=0
     )
-    # entry._zenith_deg_arr = np.array([0, 10, 20, 30, 40, 50, 60, 70, 80, 90])
 
     # Test for a single angle within the range
     assert entry._interpolation_domain(45) == (4, 6)
 
     # Test for multiple angles within the range
-    assert np.all(entry._interpolation_domain(np.array([45.0, 51.0])) == (4, 6))
+    assert np.all(entry._interpolation_domain(np.array([45.0, 51.0])) == (4, 7))
 
     # Test for an angle outside the range
     try:
@@ -116,16 +115,16 @@ def test_interpolation_domain():
     except ValueError as e:
         assert (
             str(e)
-            == "Requested zenith angles must be within the range 0.0000 - 90.0000"
+            == "Requested zenith angles must be within the range 0.0000 - 100.0000"
         )
 
     # Test for multiple angles outside the range
     try:
-        entry._interpolation_domain(np.array([-5.0, 95.0]))
+        entry._interpolation_domain(np.array([-5.0, 105.0]))
     except ValueError as e:
         assert (
             str(e)
-            == "Requested zenith angles must be within the range 0.0000 - 90.0000"
+            == "Requested zenith angles must be within the range 0.0000 - 100.0000"
         )
 
     # Test for unsorted angles

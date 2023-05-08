@@ -1,5 +1,5 @@
 from pathlib import Path
-import urllib
+import urllib.request
 import zipfile
 import numpy as np
 from typing import Dict, Union
