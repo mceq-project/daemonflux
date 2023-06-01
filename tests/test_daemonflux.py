@@ -142,7 +142,7 @@ def test_flux_calibrated():
     return Flux(
         "",
         spl_file=basep / "test_daemonsplines_generic_202303_1.pkl",
-        cal_file=basep / "test_calibration_202303_1.pkl",
+        cal_file=basep / "test_calibration_default_202303_1.pkl",
         use_calibration=True,
         debug=1,
     )
@@ -156,7 +156,7 @@ def test_flux_not_calibrated():
     return Flux(
         "",
         spl_file=basep / "test_daemonsplines_generic_202303_1.pkl",
-        cal_file=basep / "test_calibration_202303_1.pkl",
+        cal_file=basep / "test_calibration_default_202303_1.pkl",
         use_calibration=False,
         debug=1,
     )
@@ -355,12 +355,14 @@ def test_default_url(test_flux_calibrated):
         )
         + ".zip"
     )
-    url_cal = (
-        test_flux_calibrated._default_url
-        + test_flux_calibrated._default_cal_file.format(
-            rev=test_flux_calibrated._revision
-        )
-        + ".zip"
-    )
     assert request.urlopen(url_generic_spl).status in [200, 302]
-    assert request.urlopen(url_cal).status in [200, 302]
+    
+    for cal_set in ["default", "with_deis"]:
+        url_cal = (
+            test_flux_calibrated._default_url
+            + test_flux_calibrated._default_cal_file.format(
+                cset=cal_set, rev=test_flux_calibrated._revision
+            )
+            + ".zip"
+        )
+        assert request.urlopen(url_cal).status in [200, 302]

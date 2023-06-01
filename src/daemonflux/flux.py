@@ -88,11 +88,25 @@ class Parameters:
 
 
 class Flux:
+    """
+    This class encapsulates the behavior of a Flux.
+
+    Attributes
+    ----------
+    exclude : list
+        A list of items to be excluded.
+    _debug : int
+        Debug level.
+    supported_fluxes : list
+        A list of fluxes supported.
+
+    """
+
     _default_url = (
         "https://github.com/mceq-project/daemonflux/releases/download/prerelease/"
     )
     _default_spl_file = "daemonsplines_{location}_{rev}.pkl"
-    _default_cal_file = "daemonsplines_calibration_{rev}.pkl"
+    _default_cal_file = "daemonsplines_calibration_{cset}_{rev}.pkl"
     _revision = "202303_1"
 
     def __init__(
@@ -100,11 +114,34 @@ class Flux:
         location="generic",
         spl_file=None,
         cal_file=None,
+        calibration_set="default",
         use_calibration=True,
         exclude=[],
         keep_old_revisions=False,
         debug=1,
     ) -> None:
+        """
+        Initialize the Flux instance.
+
+        Parameters
+        ----------
+        location : str, optional
+            Location to be used, default is "generic".
+        spl_file : str, optional
+            Path to the spline file.
+        cal_file : str, optional
+            Path to the calibration file.
+        use_calibration : bool, optional
+            Flag indicating whether to use calibration, default is True.
+        calibration_set : str, optional
+            Calibration set to be used. Default is "default". Optional is "with_deis".
+        exclude : list, optional
+            A list of parameters to be excluded, default is an empty list.
+        keep_old_revisions : bool, optional
+            Flag indicating whether to keep old spline file revisions, default is False.
+        debug : int, optional
+            Debug level, default is 1.
+        """
         self.exclude = exclude
         self._debug = debug
         spl_file = (
@@ -115,11 +152,14 @@ class Flux:
                 + self._default_spl_file.format(location=location, rev=self._revision)
             )
         )
-        if not use_calibration:
+        if not use_calibration or not calibration_set:
             cal_file = None
         elif use_calibration and cal_file is None:
             cal_file = _cached_data_dir(
-                self._default_url + self._default_cal_file.format(rev=self._revision)
+                self._default_url
+                + self._default_cal_file.format(
+                    cset=calibration_set, rev=self._revision
+                )
             )
 
         self._load_splines(spl_file, cal_file)
@@ -127,6 +167,9 @@ class Flux:
             self._cleanup_old_revisions()
 
     def _cleanup_old_revisions(self):
+        """
+        Clean up old revisions of the data.
+        """
         import pathlib
 
         for f in pathlib.Path(base_path / "data").glob("daemonsplines*"):
@@ -135,11 +178,26 @@ class Flux:
                 f.unlink()
 
     def _load_splines(self, spl_file, cal_file):
+        """
+        Load splines from given files.
+
+        Parameters
+        ----------
+        spl_file : str
+            Path to the spline file.
+        cal_file : str
+            Path to the calibration file.
+        """
         from .utils import rearrange_covariance
         from copy import deepcopy
 
         assert pathlib.Path(spl_file).is_file(), f"Spline file {spl_file} not found."
-        (known_pars, self._fl_spl, self._jac_spl, cov,) = pickle.load(
+        (
+            known_pars,
+            self._fl_spl,
+            self._jac_spl,
+            cov,
+        ) = pickle.load(
             open(spl_file, "rb")
         )[:4]
 
@@ -164,7 +222,6 @@ class Flux:
                 + f" with the number of parameters {len(known_parameters)}"
             )
         else:
-
             assert pathlib.Path(
                 cal_file
             ).is_file(), f"Calibration file {cal_file} not found."
@@ -217,6 +274,7 @@ class Flux:
 
             params = Parameters(known_parameters, np.asarray(param_values), cov)
 
+        # If multiple locations inside the spline file, create a FluxEntry for each
         self.supported_fluxes = []
         for exp in self._fl_spl:
             subflux = _FluxEntry(
@@ -235,11 +293,22 @@ class Flux:
             s += "{0}: [{1}]\n".format(exp, ", ".join(self._fl_spl[exp].keys()))
         return s
 
-    def print_experiments(self):
+    def print_locations(self):
+        """
+        Print the locations contained within the spline file.
+        """
         print(self.__repr__())
 
     @property
     def zenith_angles(self, exp=""):
+        """
+        Retrieve zenith angles of splines for the specified location/experiment.
+
+        Parameters
+        ----------
+        exp : str, optional
+            Experiment name, default is an empty string.
+        """
         if not exp and len(self.supported_fluxes) > 1:
             raise Exception("'exp' argument needs to be one of", self.supported_fluxes)
         if len(self.supported_fluxes) == 1:
@@ -248,6 +317,14 @@ class Flux:
             return self.__getattribute__(exp).zenith_angles
 
     def _get_flux_instance(self, exp):
+        """
+        Retrieve the _FluxEntry indexed by an experiment or location.
+
+        Parameters
+        ----------
+        exp : str
+            Experiment name.
+        """
         if not exp and len(self.supported_fluxes) > 1:
             raise Exception("'exp' argument needs to be one of", self.supported_fluxes)
 
@@ -258,16 +335,95 @@ class Flux:
 
     @property
     def quantities(self, exp=""):
+        """
+        Retrieve the quantities supported by the spline file.
+
+        The default quantities are 'muflux', 'muratio', 'numuflux', 'numuratio',
+        'nueflux', 'nueratio', 'flavorratio', 'mu+', 'mu-', 'numu', 'antinumu',
+        'nue', 'antinue'. The quantities are the same for all locations. Those with
+        'flux' in the names sums over conventional 'mu+' and 'mu-', and neutrino and
+        antineutrino, respectively. Those with 'ratio' in the names are the ratios of
+        the fluxes. A second set of quantities is available with the 'total_' prefix,
+        which includes is a sum of the conventional and prompt fluxes. The latter are
+        calculated with the SIBYLL2.3d hadronic interaction model.
+
+        Parameters
+        ----------
+        exp : str, optional
+            Experiment name, default is an empty string.
+        """
         return self._get_flux_instance(exp)._quantities
 
     @property
     def params(self, exp=""):
+        """
+        Retrieve a list of the daemonflux parameters.
+
+        Parameters
+        ----------
+        exp : str, optional
+            Experiment name, default is an empty string.
+        """
         return self._get_flux_instance(exp)._params
 
     def flux(self, grid, zenith_deg, quantity, params={}, exp=""):
+        """
+        The flux of a given quantity for the specified energy grid and zenith angles.
+
+        The flux is multiplied by E^3 in units of GeV^2/(cm^2 s sr).
+
+        Parameters
+        ----------
+        grid : np.ndarray
+            The energy grid in units of GeV.
+        zenith_deg : float or str or list of float
+            The zenith angle in degrees. If "average", the average flux over all
+            zenith angles will be returned.
+        quantity : str
+            The type of flux to be returned.
+        params : Dict[str, float], optional
+            A dictionary of parameter values to shift daemonflux off the baseline.
+
+        Returns
+        -------
+        np.ndarray
+            The flux multiplied by E^3 in units of GeV^2/(cm^2 s sr).
+
+        Raises
+        ------
+        Exception
+            If `zenith_deg` is "average" but splines do not contain average flux.
+        """
         return self._get_flux_instance(exp).flux(grid, zenith_deg, quantity, params)
 
     def error(self, grid, zenith_deg, quantity, only_hadronic=False, exp=""):
+        """
+        The flux of a given quantity for the specified energy grid and zenith angles.
+
+        The error is multiplied by E^3 in units of GeV^2/(cm^2 s sr).
+
+        Parameters
+        ----------
+        grid : np.ndarray
+            The energy grid for which to compute the error.
+        zenith_deg : float or str or list of float
+            The zenith angle in degrees, or a list of zenith angles.
+        quantity : str
+            The quantity to compute the error for.
+        only_hadronic : bool, optional
+            Whether to only include the hadronic error, excluding the cosmic ray flux
+            error, by default False.
+
+        Returns
+        -------
+        np.ndarray
+            The error of the flux estimation.
+
+        Raises
+        ------
+        Exception
+            If `zenith_deg` is "average" but splines do not contain average flux.
+        """
         return self._get_flux_instance(exp).error(
             grid,
             zenith_deg,
@@ -370,7 +526,6 @@ class _FluxEntry(Flux):
             new_values = []
             keep_cov = []
             for ik, k in enumerate(pars.known_parameters):
-
                 if exclude_str in k:
                     continue
                 new_kp.append(k)
@@ -475,7 +630,6 @@ class _FluxEntry(Flux):
             )
 
         with self._temporary_exclude_parameters("GSF" if only_hadronic else None):
-
             jac = self._jac_spl[zenith_deg]
 
             jacfl = np.vstack(
@@ -564,13 +718,13 @@ class _FluxEntry(Flux):
         ----------
         grid : np.ndarray
             The energy grid in units of GeV.
-        zenith_deg : float or str
+        zenith_deg : float or str or list of float
             The zenith angle in degrees. If "average", the average flux over all
             zenith angles will be returned.
         quantity : str
             The type of flux to be returned.
         params : Dict[str, float], optional
-            A dictionary of parameter values to use for the calculation.
+            A dictionary of parameter values to shift daemonflux off the baseline.
 
         Returns
         -------
