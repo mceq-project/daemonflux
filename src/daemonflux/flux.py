@@ -430,6 +430,22 @@ class Flux:
             quantity,
             only_hadronic,
         )
+    
+    def chi2(self, params={}, exp=""):
+        """
+        Returns the chi-square value of the parameters.
+
+        Parameters
+        ----------
+        params: dict
+            Dictionary of modified parameters
+
+        Returns
+        -------
+        float
+            Chi-square value associated with params
+        """
+        return self._get_flux_instance(exp).chi2(params)
 
     def __getitem__(self, exp_label):
         if exp_label not in self.supported_fluxes:
@@ -800,3 +816,20 @@ class _FluxEntry(Flux):
             )
         else:
             return self._error_from_interp(grid, zenith_deg, quantity, only_hadronic)
+        
+    def chi2(self, params={}):
+        """
+        Returns the chi-square value of the parameters.
+
+        Parameters
+        ----------
+        params: dict
+            Dictionary of modified parameters
+
+        Returns
+        -------
+        numpy.ndarray
+            Chi-square value associated with params
+        """
+        with self._temporary_parameters(params):
+            return self._params.chi2
