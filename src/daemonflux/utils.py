@@ -42,23 +42,23 @@ def format_angle(ang: Union[float, str]) -> str:
     return "{:4.4f}".format(float(ang))
 
 
-def grid_cov(jac: np.ndarray, cov: np.ndarray) -> np.ndarray:
+def grid_cov(jac: np.ndarray, invcov: np.ndarray) -> np.ndarray:
     """
-    Calculate the covariance of the grid.
+    Chi2 matrix expression.
 
     Parameters
     ----------
     jac : np.ndarray
         The Jacobian matrix.
-    cov : np.ndarray
-        The covariance matrix.
+    invcov : np.ndarray
+        The inverse of the covariance matrix.
 
     Returns
     -------
-    np.ndarray
-        The covariance of the grid.
+    np.ndarray 
+        
     """
-    return np.dot(jac, np.dot(cov, jac.T))
+    return np.dot(jac, np.dot(invcov, jac.T))
 
 
 def is_iterable(arg) -> bool:
