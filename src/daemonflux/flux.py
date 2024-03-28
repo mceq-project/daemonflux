@@ -32,6 +32,7 @@ class Parameters:
     ):
         self.known_parameters = known_parameters
         self.values = values
+        self._unmodified_values = np.copy(values)
         self.cov = cov
 
     @property
@@ -71,7 +72,7 @@ class Parameters:
         numpy.ndarray
             Chi-square value associated with params
         """
-        return np.sum(grid_cov(self.values, self.invcov))
+        return np.sum(grid_cov(self.values - self._unmodified_values, self.invcov))
 
     def __iter__(self) -> Generator[Tuple[str, float], None, None]:
         """Iterate over the parameters.
@@ -211,7 +212,6 @@ class Flux:
 
         if cal_file is None:
             print("No calibration used.")
-
             params = Parameters(
                 known_parameters,
                 np.zeros(len(known_parameters)),

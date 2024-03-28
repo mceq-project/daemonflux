@@ -366,3 +366,13 @@ def test_default_url(test_flux_calibrated):
             + ".zip"
         )
         assert request.urlopen(url_cal).status in [200, 302]
+
+def test_chi2(test_flux_calibrated, test_flux_not_calibrated):
+    egrid = np.logspace(0, 8)
+    assert test_flux_calibrated.chi2() == test_flux_not_calibrated.chi2()
+    params = test_flux_calibrated.known_parameters[:3]
+    values = np.array([1, 2, 3])
+    param_dict = dict(zip(params, values))
+    assert test_flux_calibrated.chi2(param_dict) == test_flux_not_calibrated.chi2(
+        param_dict
+    )
