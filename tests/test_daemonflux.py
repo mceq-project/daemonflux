@@ -1,6 +1,7 @@
 import numpy as np
 import numpy.testing as npt
 import pytest
+import pathlib
 
 from daemonflux.flux import Flux, Parameters, _FluxEntry
 from daemonflux.utils import format_angle, grid_cov, is_iterable, rearrange_covariance
@@ -44,9 +45,10 @@ def test_parameters_errors():
 
 def test_parameters_chi2():
     known_parameters = ["p1", "p2"]
-    values = np.array([1, 2])
+    values = np.zeros(2)
     cov = np.array([[1.0, 0.5], [0.5, 1.0]])
     params = Parameters(known_parameters, values, cov)
+    params.values = np.array([1, 2])
     chi2 = params.chi2
     expected_chi2 = 4
     npt.assert_allclose(chi2, expected_chi2, rtol=1e-6, atol=1e-6)
@@ -91,7 +93,9 @@ def test_rearrange_covariance():
 
 
 def test_interpolation_domain():
-    zenith_test_dataset = np.array([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100], dtype=float)
+    zenith_test_dataset = np.array(
+        [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100], dtype=float
+    )
     mock_spl = dict(
         [(format_angle(z), {"numuflux": [], "muflux": []}) for z in zenith_test_dataset]
     )
@@ -136,8 +140,6 @@ def test_interpolation_domain():
 
 @pytest.fixture(scope="session")
 def test_flux_calibrated():
-    import pathlib
-
     basep = pathlib.Path(__file__).parent.absolute()
     return Flux(
         "",
@@ -150,8 +152,6 @@ def test_flux_calibrated():
 
 @pytest.fixture(scope="session")
 def test_flux_not_calibrated():
-    import pathlib
-
     basep = pathlib.Path(__file__).parent.absolute()
     return Flux(
         "",
@@ -164,7 +164,6 @@ def test_flux_not_calibrated():
 
 # Generate updated numbers for this test by running the following:
 def test_Flux(test_flux_calibrated, test_flux_not_calibrated):
-
     egrid = np.logspace(0, 8)
 
     assert np.allclose(
@@ -355,9 +354,11 @@ def test_default_url(test_flux_calibrated):
         )
         + ".zip"
     )
+    assert test_flux_calibrated._revision == "202303_2"
     assert request.urlopen(url_generic_spl).status in [200, 302]
-    
+
     for cal_set in ["default", "with_deis"]:
+
         url_cal = (
             test_flux_calibrated._default_url
             + test_flux_calibrated._default_cal_file.format(
@@ -366,3 +367,28 @@ def test_default_url(test_flux_calibrated):
             + ".zip"
         )
         assert request.urlopen(url_cal).status in [200, 302]
+
+
+def test_chi2(test_flux_calibrated, test_flux_not_calibrated):
+    assert test_flux_calibrated.chi2() == test_flux_not_calibrated.chi2() == 0.0
+    params = test_flux_calibrated.params.known_parameters[:3]
+    values = np.array([1, 2, 3])
+    param_dict = dict(zip(params, values))
+    assert test_flux_calibrated.chi2(param_dict) > 0
+    assert test_flux_not_calibrated.chi2(param_dict)
+
+
+def test_uncorrelated_errors():
+    basep = pathlib.Path(__file__).parent.absolute()
+    fl = Flux(
+        "",
+        spl_file=basep / "test_daemonsplines_generic_202303_1.pkl",
+        cal_file=basep / "test_calibration_default_202303_1.pkl",
+        use_calibration=False,
+        uncorrelated_hadr_errors=True,
+        debug=1,
+    )
+    assert np.allclose(
+        fl.params.cov[: fl.params._n_non_gsf, : fl.params._n_non_gsf],
+        np.diag(np.ones(fl.params._n_non_gsf)),
+    )
