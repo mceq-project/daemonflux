@@ -55,8 +55,8 @@ def grid_cov(jac: np.ndarray, invcov: np.ndarray) -> np.ndarray:
 
     Returns
     -------
-    np.ndarray 
-        
+    np.ndarray
+
     """
     return np.dot(jac, np.dot(invcov, jac.T))
 

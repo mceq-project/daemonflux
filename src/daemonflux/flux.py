@@ -31,6 +31,7 @@ class Parameters:
         self, known_parameters: List[str], values: np.ndarray, cov: np.ndarray
     ):
         self.known_parameters = known_parameters
+        self._n_non_gsf = len([p for p in known_parameters if "GSF" not in p])
         self.values = values
         self._unmodified_values = np.copy(values)
         self.cov = cov
@@ -108,7 +109,7 @@ class Flux:
     )
     _default_spl_file = "daemonsplines_{location}_{rev}.pkl"
     _default_cal_file = "daemonsplines_calibration_{cset}_{rev}.pkl"
-    _revision = "202303_1"
+    _revision = "202303_2"
 
     def __init__(
         self,
@@ -117,6 +118,7 @@ class Flux:
         cal_file=None,
         calibration_set="default",
         use_calibration=True,
+        uncorrelated_hadr_errors=False,
         exclude=[],
         keep_old_revisions=False,
         debug=1,
@@ -134,6 +136,9 @@ class Flux:
             Path to the calibration file.
         use_calibration : bool, optional
             Flag indicating whether to use calibration, default is True.
+        uncorrelated_hadr_errors: bool, optional
+            Flag indicating whether to use uncorrelated hadronic errors
+            (during calibration), default is False.
         calibration_set : str, optional
             Calibration set to be used. Default is "default". Optional is "with_deis".
         exclude : list, optional
@@ -145,6 +150,11 @@ class Flux:
         """
         self.exclude = exclude
         self._debug = debug
+        self._uncorrelated_hadr_errors = uncorrelated_hadr_errors
+
+        # Define location or spl_file
+        assert location or spl_file, "Either location or spl_file must be defined."
+
         spl_file = (
             spl_file
             if spl_file
@@ -273,6 +283,11 @@ class Flux:
                     )
 
             params = Parameters(known_parameters, np.asarray(param_values), cov)
+
+        if self._uncorrelated_hadr_errors:
+            params.cov[: params._n_non_gsf, : params._n_non_gsf] = np.diag(
+                np.ones(params._n_non_gsf)
+            )
 
         # If multiple locations inside the spline file, create a FluxEntry for each
         self.supported_fluxes = []
@@ -430,7 +445,7 @@ class Flux:
             quantity,
             only_hadronic,
         )
-    
+
     def chi2(self, params={}, exp=""):
         """
         Returns the chi-square value of the parameters.
@@ -816,7 +831,7 @@ class _FluxEntry(Flux):
             )
         else:
             return self._error_from_interp(grid, zenith_deg, quantity, only_hadronic)
-        
+
     def chi2(self, params={}):
         """
         Returns the chi-square value of the parameters.
