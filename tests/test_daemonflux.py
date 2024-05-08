@@ -392,3 +392,8 @@ def test_uncorrelated_errors():
         fl.params.cov[: fl.params._n_non_gsf, : fl.params._n_non_gsf],
         np.diag(np.ones(fl.params._n_non_gsf)),
     )
+
+
+def test_scalar_energy_arg(test_flux_calibrated):
+    assert test_flux_calibrated.flux(100.0, 15.0, "numuflux").shape == ()
+    assert test_flux_calibrated.error(100.0, 15.0, "numuflux").shape == ()
