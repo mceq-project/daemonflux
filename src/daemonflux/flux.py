@@ -203,14 +203,17 @@ class Flux:
         from copy import deepcopy
 
         assert pathlib.Path(spl_file).is_file(), f"Spline file {spl_file} not found."
-        (
-            known_pars,
-            self._fl_spl,
-            self._jac_spl,
-            cov,
-        ) = pickle.load(
-            open(spl_file, "rb")
-        )[:4]
+        with open(spl_file, "rb") as f:
+            if self._debug > 2:
+                print("Loading splines from", spl_file)
+            (
+                known_pars,
+                self._fl_spl,
+                self._jac_spl,
+                cov,
+            ) = pickle.load(
+                f
+            )[:4]
 
         known_parameters = []
         for k in known_pars:
@@ -235,8 +238,10 @@ class Flux:
             assert pathlib.Path(
                 cal_file
             ).is_file(), f"Calibration file {cal_file} not found."
-
-            calibration_d = pickle.load(open(str(cal_file), "rb"), encoding="latin1")
+            with open(str(cal_file), "rb") as f:
+                if self._debug > 2:
+                    print("Loading calibration from", cal_file)
+                calibration_d = pickle.load(f, encoding="latin1")
 
             param_values = []
             for ip, n in enumerate(known_parameters):
