@@ -1,4 +1,4 @@
-from typing import Dict, Union, Tuple, Generator, List
+from typing import Dict, Optional, Union, Tuple, Generator, List
 import numpy as np
 import pickle
 import pathlib
@@ -605,14 +605,22 @@ class _FluxEntry(Flux):
 
     @contextmanager
     def _at_height(self, height_km: float):
-        """Temporarily rebind splines to the nearest height level."""
+        """Temporarily rebind splines to the exact height level."""
         if self._height_data is None:
             raise ValueError(
                 "No height grid in this spline file. "
                 "Regenerate with a height-grid config."
             )
         height_grid = self._height_data["height_grid_km"]
-        ih = int(np.argmin(np.abs(height_grid - height_km)))
+        matches = np.where(height_grid == height_km)[0]
+        if len(matches) == 0:
+            raise ValueError(
+                f"{height_km} km is not in the height grid. "
+                f"Valid values: {list(height_grid)}. "
+                "Inspect available values with flux.height_grid (on the Flux object) "
+                "or flux_entry.height_grid (on a _FluxEntry object)."
+            )
+        ih = int(matches[0])
         hkey = f"h_{ih}"
 
         orig_fl_spl = self._fl_spl
@@ -807,7 +815,7 @@ class _FluxEntry(Flux):
         zenith_deg: Union[float, str, np.ndarray],
         quantity: str,
         params: Dict[str, float] = {},
-        height_km: float = None,
+        height_km: Optional[float] = None,
     ) -> Union[float, np.ndarray]:
         """
         Compute the flux at the given energy energy, zenith angle, and quantity.
@@ -862,7 +870,7 @@ class _FluxEntry(Flux):
         zenith_deg: Union[float, str],
         quantity: str,
         only_hadronic: bool = False,
-        height_km: float = None,
+        height_km: Optional[float] = None,
     ) -> Union[float, np.ndarray]:
         """
         Return the error of the flux estimation for the given parameters.
