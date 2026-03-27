@@ -18,9 +18,9 @@ def test_format_angle():
     ]
     for ang, expected in tests:
         result = format_angle(ang)
-        assert (
-            result == expected
-        ), f"For angle {ang}, expected {expected} but got {result}"
+        assert result == expected, (
+            f"For angle {ang}, expected {expected} but got {result}"
+        )
 
 
 def test_parameters_invcov():
@@ -103,9 +103,7 @@ def test_interpolation_domain():
     values = np.array([1, 2])
     cov = np.array([[1.0, 0.5], [0.5, 1.0]])
     params = Parameters(known_parameters, values, cov)
-    entry = _FluxEntry(
-        "mock", fl_spl=mock_spl, jac_spl=mock_spl, params=params, debug=0
-    )
+    entry = _FluxEntry("mock", fl_spl=mock_spl, jac_spl=mock_spl, params=params, debug=0)
 
     # Test for a single angle within the range
     assert entry._interpolation_domain(45) == (4, 6)
@@ -118,8 +116,7 @@ def test_interpolation_domain():
         entry._interpolation_domain(-5)
     except ValueError as e:
         assert (
-            str(e)
-            == "Requested zenith angles must be within the range 0.0000 - 100.0000"
+            str(e) == "Requested zenith angles must be within the range 0.0000 - 100.0000"
         )
 
     # Test for multiple angles outside the range
@@ -127,8 +124,7 @@ def test_interpolation_domain():
         entry._interpolation_domain(np.array([-5.0, 105.0]))
     except ValueError as e:
         assert (
-            str(e)
-            == "Requested zenith angles must be within the range 0.0000 - 100.0000"
+            str(e) == "Requested zenith angles must be within the range 0.0000 - 100.0000"
         )
 
     # Test for unsorted angles
@@ -172,9 +168,7 @@ def test_Flux(test_flux_calibrated, test_flux_not_calibrated):
     assert np.allclose(
         np.sum(test_flux_calibrated.flux(egrid, "18.1949", "numuflux")), 0.813709
     )
-    assert np.allclose(
-        np.sum(test_flux_calibrated.flux(egrid, 10, "numuflux")), 0.800793
-    )
+    assert np.allclose(np.sum(test_flux_calibrated.flux(egrid, 10, "numuflux")), 0.800793)
     assert np.allclose(
         np.sum(test_flux_calibrated.flux(egrid, "0.0000", "muflux")), 3.248550
     )
@@ -244,9 +238,7 @@ def test_Flux_error(test_flux_calibrated, test_flux_not_calibrated):
     assert np.allclose(
         np.sum(test_flux_calibrated.error(egrid, "18.1949", "muflux")), 0.0852520
     )
-    assert np.allclose(
-        np.sum(test_flux_calibrated.error(egrid, 10, "muflux")), 0.0837810
-    )
+    assert np.allclose(np.sum(test_flux_calibrated.error(egrid, 10, "muflux")), 0.0837810)
     assert np.allclose(
         np.sum(test_flux_not_calibrated.error(egrid, "0.0000", "numuflux")), 0.0291060
     )
@@ -358,7 +350,6 @@ def test_default_url(test_flux_calibrated):
     assert request.urlopen(url_generic_spl).status in [200, 302]
 
     for cal_set in ["default", "with_deis"]:
-
         url_cal = (
             test_flux_calibrated._default_url
             + test_flux_calibrated._default_cal_file.format(

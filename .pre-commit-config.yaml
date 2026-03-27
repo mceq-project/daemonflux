@@ -16,16 +16,11 @@ repos:
   - id: trailing-whitespace
     files: ^\.github/workflows/|.*\.py$
 
-# Python formatting
-- repo: https://github.com/psf/black
-  rev: 26.3.1
+# Python formatting and linting (ruff replaces black + flake8)
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.15.8
   hooks:
-  - id: black
-
-# Python linter (Flake8)
-- repo: https://github.com/pycqa/flake8
-  rev: 7.3.0
-  hooks:
-  - id: flake8
+  - id: ruff
     files: ./[^_].*\.py
-    args: [--config, setup.cfg]
+    args: [--fix]
+  - id: ruff-format

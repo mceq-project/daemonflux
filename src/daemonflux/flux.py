@@ -27,9 +27,7 @@ class Parameters:
         Covariance matrix of parameters.
     """
 
-    def __init__(
-        self, known_parameters: List[str], values: np.ndarray, cov: np.ndarray
-    ):
+    def __init__(self, known_parameters: List[str], values: np.ndarray, cov: np.ndarray):
         self.known_parameters = known_parameters
         self._n_non_gsf = len([p for p in known_parameters if "GSF" not in p])
         self.values = values
@@ -168,9 +166,7 @@ class Flux:
         elif use_calibration and cal_file is None:
             cal_file = _cached_data_dir(
                 self._default_url
-                + self._default_cal_file.format(
-                    cset=calibration_set, rev=self._revision
-                )
+                + self._default_cal_file.format(cset=calibration_set, rev=self._revision)
             )
 
         self._load_splines(spl_file, cal_file)
@@ -235,9 +231,9 @@ class Flux:
                 + f" with the number of parameters {len(known_parameters)}"
             )
         else:
-            assert pathlib.Path(
-                cal_file
-            ).is_file(), f"Calibration file {cal_file} not found."
+            assert pathlib.Path(cal_file).is_file(), (
+                f"Calibration file {cal_file} not found."
+            )
             with open(str(cal_file), "rb") as f:
                 if self._debug > 2:
                     print("Loading calibration from", cal_file)
@@ -260,9 +256,9 @@ class Flux:
             )
             n_physics_params = max(original_param_order.values()) + 1
 
-            assert sorted(original_param_order.keys()) == sorted(
-                known_parameters
-            ), "Parameters inconsistent between spl and calibration file"
+            assert sorted(original_param_order.keys()) == sorted(known_parameters), (
+                "Parameters inconsistent between spl and calibration file"
+            )
 
             # Create a new covariance with the correct order of parameters
             cov = rearrange_covariance(
