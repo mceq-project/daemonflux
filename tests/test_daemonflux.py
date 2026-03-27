@@ -354,7 +354,7 @@ def test_default_url(test_flux_calibrated):
         )
         + ".zip"
     )
-    assert test_flux_calibrated._revision == "202303_2"
+    assert test_flux_calibrated._revision == "20260326"
     assert request.urlopen(url_generic_spl).status in [200, 302]
 
     for cal_set in ["default", "with_deis"]:

@@ -109,7 +109,7 @@ class Flux:
     )
     _default_spl_file = "daemonsplines_{location}_{rev}.pkl"
     _default_cal_file = "daemonsplines_calibration_{cset}_{rev}.pkl"
-    _revision = "202303_2"
+    _revision = "20260326"
 
     def __init__(
         self,
@@ -299,7 +299,9 @@ class Flux:
         for exp in self._fl_spl:
             # Pass per-experiment height data if available
             exp_height_data = None
-            if self._height_data is not None and exp in self._height_data.get("fl_spl", {}):
+            if self._height_data is not None and exp in self._height_data.get(
+                "fl_spl", {}
+            ):
                 exp_height_data = {
                     "height_grid_km": self._height_data["height_grid_km"],
                     "fl_spl": self._height_data["fl_spl"][exp],
@@ -429,7 +431,9 @@ class Flux:
             energy, zenith_deg, quantity, params, height_km=height_km
         )
 
-    def error(self, energy, zenith_deg, quantity, only_hadronic=False, exp="", height_km=None):
+    def error(
+        self, energy, zenith_deg, quantity, only_hadronic=False, exp="", height_km=None
+    ):
         """
         The flux of a given quantity for the specified energy energy and zenith angles.
 
