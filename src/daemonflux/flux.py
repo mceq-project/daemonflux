@@ -209,7 +209,14 @@ class Flux:
                 self._jac_spl,
                 cov,
             ) = loaded[:4]
-            self._height_data = loaded[5] if len(loaded) > 5 else None
+            extra = loaded[5] if len(loaded) > 5 else None
+            if isinstance(extra, dict) and "linear_quantities" in extra:
+                self._linear_quantities = extra["linear_quantities"]
+                self._height_data = extra.get("height_data")
+            else:
+                # Old format: index 5 is height_data directly
+                self._linear_quantities = None
+                self._height_data = extra
 
         known_parameters = []
         for k in known_pars:
@@ -310,6 +317,7 @@ class Flux:
                 deepcopy(params),
                 self._debug,
                 height_data=exp_height_data,
+                linear_quantities=self._linear_quantities,
             )
             setattr(self, exp, subflux)
             self.supported_fluxes.append(exp)
@@ -500,6 +508,7 @@ class _FluxEntry(Flux):
         params: Parameters,
         debug: int,
         height_data: dict = None,
+        linear_quantities: set = None,
     ) -> None:
         """
         Initialize a `_FluxEntry` object.
@@ -520,6 +529,9 @@ class _FluxEntry(Flux):
             Per-experiment height grid data ``{"height_grid_km": ...,
             "fl_spl": {ang: {hkey: {dk: spl}}},
             "jac_spl": {ang: {hkey: {pk: {dk: spl}}}}}``.
+        linear_quantities : set, optional
+            Quantities stored as linear (not log) splines. If None (old
+            spline files), falls back to ``_pol`` suffix heuristic.
         """
         self.label = label
         self._fl_spl = fl_spl
@@ -527,6 +539,7 @@ class _FluxEntry(Flux):
         self._params = params
         self._debug = debug
         self._height_data = height_data
+        self._linear_quantities = linear_quantities
         assert self._fl_spl is not None, "Splines have to be initialized"
         assert self._jac_spl is not None, "Jacobians required for error estimate"
         self._spl_contains_average = "average" in self._fl_spl
@@ -535,6 +548,18 @@ class _FluxEntry(Flux):
         self._zenith_deg_arr.sort()
         self._zenith_cos_arr = np.cos(np.deg2rad(self._zenith_deg_arr))
         self._quantities = list(self._fl_spl[list(self._fl_spl.keys())[0]].keys())
+
+    def _is_linear(self, quantity: str) -> bool:
+        """Whether *quantity* was stored as a linear (not log) spline.
+
+        New spline files carry an explicit ``linear_quantities`` set.
+        Old files don't, so we fall back to the ``_pol`` suffix heuristic
+        (ratios were log-stored in older releases).
+        """
+        if self._linear_quantities is not None:
+            return quantity in self._linear_quantities
+        # Fallback for old spline files: only _pol was linear
+        return quantity.endswith("_pol")
 
     @property
     def zenith_angles(self) -> list:
@@ -688,12 +713,15 @@ class _FluxEntry(Flux):
         """
         jac = self._jac_spl[zenith_deg]
         fl = self._fl_spl[zenith_deg]
+        log_e = np.log(energy)
         with self._temporary_parameters(params):
-            corrections = 1 + np.sum(
-                [v * jac[dk][quantity](np.log(energy)) for (dk, v) in self._params],
+            jac_sum = np.sum(
+                [v * jac[dk][quantity](log_e) for (dk, v) in self._params],
                 axis=0,
             )
-        return (np.exp(fl[quantity](np.log(energy))) * corrections).squeeze()
+        if self._is_linear(quantity):
+            return (fl[quantity](log_e) + jac_sum).squeeze()
+        return (np.exp(fl[quantity](log_e)) * (1 + jac_sum)).squeeze()
 
     def _flux_from_interp(
         self,
@@ -741,6 +769,8 @@ class _FluxEntry(Flux):
                 ]
             ).T
             error = np.sqrt(np.diag(grid_cov(jacfl, self._params.cov)))
+            if self._is_linear(quantity):
+                return error.squeeze()
             return (
                 np.exp(self._fl_spl[zenith_deg][quantity](np.log(energy))) * error
             ).squeeze()
