@@ -4,6 +4,11 @@ import pickle
 import pathlib
 from .utils import grid_cov, is_iterable, format_angle, _cached_data_dir
 from contextlib import contextmanager
+from .metadata import (
+    validate_metadata,
+    validate_covariance,
+    validate_calibration_identity,
+)
 
 # # Anatoli's installation requires me to add this
 # import sys
@@ -28,10 +33,19 @@ class Parameters:
     """
 
     def __init__(
-        self, known_parameters: List[str], values: np.ndarray, cov: np.ndarray
+        self,
+        known_parameters: List[str],
+        values: np.ndarray,
+        cov: np.ndarray,
+        groups=None,
     ):
         self.known_parameters = known_parameters
-        self._n_non_gsf = len([p for p in known_parameters if "GSF" not in p])
+        self.groups = (
+            dict(groups)
+            if groups is not None
+            else {p: "primary" if "GSF" in p else "hadronic" for p in known_parameters}
+        )
+        self._n_non_gsf = sum(self.groups[p] == "hadronic" for p in known_parameters)
         self.values = values
         self._unmodified_values = np.copy(values)
         self.cov = cov
@@ -45,6 +59,8 @@ class Parameters:
         np.ndarray, shape (n_params, n_params)
             Inverse of the covariance matrix.
         """
+        if self.cov is None:
+            raise ValueError("This response library has no parameter covariance")
         return np.linalg.inv(self.cov)
 
     @property
@@ -56,6 +72,8 @@ class Parameters:
         np.ndarray, shape (n_params,)
             Array of parameter errors.
         """
+        if self.cov is None:
+            raise ValueError("This response library has no parameter covariance")
         return np.sqrt(np.diag(self.cov))
 
     @property
@@ -168,9 +186,7 @@ class Flux:
         elif use_calibration and cal_file is None:
             cal_file = _cached_data_dir(
                 self._default_url
-                + self._default_cal_file.format(
-                    cset=calibration_set, rev=self._revision
-                )
+                + self._default_cal_file.format(cset=calibration_set, rev=self._revision)
             )
 
         self._load_splines(spl_file, cal_file)
@@ -206,14 +222,23 @@ class Flux:
         with open(spl_file, "rb") as f:
             if self._debug > 2:
                 print("Loading splines from", spl_file)
+            payload = pickle.load(f)
             (
                 known_pars,
                 self._fl_spl,
                 self._jac_spl,
                 cov,
-            ) = pickle.load(
-                f
-            )[:4]
+            ) = payload[:4]
+        self.metadata = validate_metadata(
+            payload[5] if len(payload) > 5 else None, known_pars
+        )
+        groups = (
+            None
+            if self.metadata is None
+            else {p["name"]: p["group"] for p in self.metadata["parameters"]}
+        )
+        if self.metadata is not None:
+            cov = validate_covariance(cov, len(known_pars))
 
         known_parameters = []
         for k in known_pars:
@@ -225,23 +250,32 @@ class Flux:
 
         if cal_file is None:
             print("No calibration used.")
+            keep = [known_pars.index(p) for p in known_parameters]
+            if cov is not None:
+                cov = np.asarray(cov)[np.ix_(keep, keep)]
             params = Parameters(
                 known_parameters,
                 np.zeros(len(known_parameters)),
                 cov,
+                groups=groups,
             )
-            assert params.cov.shape == (len(known_parameters),) * 2, (
+            assert (
+                params.cov is None or params.cov.shape == (len(known_parameters),) * 2
+            ), (
                 f"covariance shape {params.cov.shape} is not consistent"
                 + f" with the number of parameters {len(known_parameters)}"
             )
         else:
-            assert pathlib.Path(
-                cal_file
-            ).is_file(), f"Calibration file {cal_file} not found."
+            assert pathlib.Path(cal_file).is_file(), (
+                f"Calibration file {cal_file} not found."
+            )
             with open(str(cal_file), "rb") as f:
                 if self._debug > 2:
                     print("Loading calibration from", cal_file)
                 calibration_d = pickle.load(f, encoding="latin1")
+            validate_calibration_identity(
+                calibration_d, spl_file, required=self.metadata is not None
+            )
 
             param_values = []
             for ip, n in enumerate(known_parameters):
@@ -260,9 +294,9 @@ class Flux:
             )
             n_physics_params = max(original_param_order.values()) + 1
 
-            assert sorted(original_param_order.keys()) == sorted(
-                known_parameters
-            ), "Parameters inconsistent between spl and calibration file"
+            assert sorted(original_param_order.keys()) == sorted(known_parameters), (
+                "Parameters inconsistent between spl and calibration file"
+            )
 
             # Create a new covariance with the correct order of parameters
             cov = rearrange_covariance(
@@ -287,12 +321,28 @@ class Flux:
                         + " incorrectly sorted."
                     )
 
-            params = Parameters(known_parameters, np.asarray(param_values), cov)
+            if self.metadata is not None:
+                cov = validate_covariance(cov, len(known_parameters))
+            params = Parameters(
+                known_parameters, np.asarray(param_values), cov, groups=groups
+            )
 
         if self._uncorrelated_hadr_errors:
-            params.cov[: params._n_non_gsf, : params._n_non_gsf] = np.diag(
-                np.ones(params._n_non_gsf)
+            if params.cov is None:
+                raise ValueError("Cannot decorrelate an unspecified prior")
+            indices = [
+                i
+                for i, p in enumerate(known_parameters)
+                if params.groups[p] == "hadronic"
+            ]
+            # Legacy sigma-normalized files historically replace the block by I.
+            # Explicit fractional metadata must preserve its supplied variances.
+            diagonal = (
+                np.ones(len(indices))
+                if self.metadata is None
+                else np.diag(params.cov)[indices]
             )
+            params.cov[np.ix_(indices, indices)] = np.diag(diagonal)
 
         # If multiple locations inside the spline file, create a FluxEntry for each
         self.supported_fluxes = []
@@ -562,22 +612,29 @@ class _FluxEntry(Flux):
             new_values = []
             keep_cov = []
             for ik, k in enumerate(pars.known_parameters):
-                if exclude_str in k:
+                if (exclude_str == "GSF" and pars.groups[k] == "primary") or (
+                    exclude_str != "GSF" and exclude_str in k
+                ):
                     continue
                 new_kp.append(k)
                 new_values.append(pars.values[ik])
                 keep_cov.append(ik)
 
-            pars.cov = np.take(np.take(pars.cov, keep_cov, axis=0), keep_cov, axis=1)
+            if pars.cov is not None:
+                pars.cov = np.take(np.take(pars.cov, keep_cov, axis=0), keep_cov, axis=1)
             pars.values = np.asarray(new_values)
             pars.known_parameters = new_kp
 
-            assert pars.cov.shape[0] == len(pars.known_parameters) == len(pars.values)
+            assert pars.cov is None or pars.cov.shape[0] == len(
+                pars.known_parameters
+            ) == len(pars.values)
 
             yield
 
             self._params = prev
-            assert pars.cov.shape[0] == len(pars.known_parameters) == len(pars.values)
+            assert pars.cov is None or pars.cov.shape[0] == len(
+                pars.known_parameters
+            ) == len(pars.values)
 
     def _check_input(self, energy: Union[np.ndarray, float], quantity: str) -> None:
         """
@@ -660,6 +717,8 @@ class _FluxEntry(Flux):
         quantity: str,
         only_hadronic: bool,
     ) -> np.ndarray:
+        if self._params.cov is None:
+            raise ValueError("This response library has no parameter covariance")
         if self._debug > 2:
             print(
                 f"Return {quantity} flux for {zenith_deg}, only_hadronic=",
