@@ -413,9 +413,9 @@ class Flux:
         'nue', 'antinue'. The quantities are the same for all locations. Those with
         'flux' in the names sums over conventional 'mu+' and 'mu-', and neutrino and
         antineutrino, respectively. Those with 'ratio' in the names are the ratios of
-        the fluxes. A second set of quantities is available with the 'total_' prefix,
-        which includes is a sum of the conventional and prompt fluxes. The latter are
-        calculated with the SIBYLL2.3d hadronic interaction model.
+        the fluxes. Files with separated production channels also expose prompt
+        quantities with the 'pr_' prefix and conventional-plus-prompt quantities with
+        the 'total_' prefix.
 
         Parameters
         ----------
@@ -652,9 +652,18 @@ class _FluxEntry(Flux):
         AssertionError
             If the energy energy is out of range or if the quantity is unknown.
         """
-        assert np.max(energy) <= 1e9 and np.min(energy) >= 5e-2, "Energy out of range"
         assert quantity in self._quantities, "Quantity must be one of {0}.".format(
             ", ".join(self._quantities)
+        )
+        domains = [
+            np.exp(splines[quantity].get_knots()[[0, -1]])
+            for splines in self._fl_spl.values()
+            if quantity in splines
+        ]
+        lower = max(domain[0] for domain in domains)
+        upper = min(domain[1] for domain in domains)
+        assert np.max(energy) <= upper and np.min(energy) >= lower, (
+            f"Energy out of range for {quantity}: {lower:g} - {upper:g} GeV"
         )
 
     def _flux_from_spl(

@@ -116,3 +116,18 @@ def test_legacy_five_item_payload(tmp_path):
     f = load(path, use_calibration=False)
     assert f.metadata is None
     assert np.isfinite(f.error([2.0], 0, "numuflux"))
+
+
+def test_energy_range_follows_spline_domain(tmp_path):
+    path, payload = library(tmp_path, np.eye(3))
+    upper = 2.0e9
+    spline = UnivariateSpline([0, np.log(upper)], [2, 2], k=1, s=0)
+    payload[1]["generic"]["0.0000"]["numuflux"] = spline
+    for parameter in payload[0]:
+        payload[2]["generic"]["0.0000"][parameter]["numuflux"] = spline
+    path.write_bytes(pickle.dumps(payload))
+
+    flux = load(path, use_calibration=False)
+    assert np.isfinite(flux.flux(upper, 0, "numuflux"))
+    with pytest.raises(AssertionError, match="Energy out of range for numuflux"):
+        flux.flux(1.01 * upper, 0, "numuflux")

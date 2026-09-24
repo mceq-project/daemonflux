@@ -21,8 +21,10 @@ quantities = [
     "nue",
     "antinue",
 ]
-# Total are conventional + prompt if available
-quantities += ["total_" + q for q in quantities]
+# Prompt components and conventional + prompt totals, when stored.
+_component_quantities = quantities.copy()
+quantities += ["pr_" + q for q in _component_quantities]
+quantities += ["total_" + q for q in _component_quantities]
 
 
 def format_angle(ang: Union[float, str]) -> str:
