@@ -7,7 +7,6 @@ import pytest
 from scipy.interpolate import UnivariateSpline
 
 from daemonflux import Flux
-from daemonflux.metadata import file_sha256
 
 
 def library(tmp_path, cov=None, metadata=True):
@@ -77,8 +76,35 @@ def test_decorrelation_preserves_fractional_variances(tmp_path):
     np.testing.assert_allclose(f.params.cov, np.diag([0.09, 0.04, 0.01]))
 
 
-def test_calibration_hash_and_reordered_covariance(tmp_path):
+def test_calibration_binds_by_parameter_position(tmp_path):
     path, payload = library(tmp_path)
+    names = list(payload[0])
+    calibration = {
+        "params": {p: {"value": 0.01 * i, "number": i} for i, p in enumerate(names)},
+        "cov_params": names + ["nuisance"],
+        "cov_matrix": np.diag([0.01, 0.04, 0.09, 1.0]),
+        "spline_sha256": "0" * 64,
+    }
+    cal = tmp_path / "calibration.pkl"
+    cal.write_bytes(pickle.dumps(calibration))
+    f = load(path, cal_file=cal)
+    np.testing.assert_allclose(f.params.cov, np.diag([0.01, 0.04, 0.09]))
+    np.testing.assert_allclose(f.params.values, [0, 0.01, 0.02])
+
+    calibration["cov_params"] = names[::-1] + ["nuisance"]
+    cal.write_bytes(pickle.dumps(calibration))
+    with pytest.raises(ValueError, match="name and position"):
+        load(path, cal_file=cal)
+
+    calibration["cov_params"] = names + ["nuisance"]
+    calibration["params"][names[0]]["number"] = 2
+    cal.write_bytes(pickle.dumps(calibration))
+    with pytest.raises(ValueError, match="has number 2"):
+        load(path, cal_file=cal)
+
+
+def test_legacy_calibration_reorders_by_name(tmp_path):
+    path, payload = library(tmp_path, metadata=False)
     names = payload[0][::-1]
     calibration = {
         "params": {p: {"value": 0.01 * i} for i, p in enumerate(names)},
@@ -87,17 +113,9 @@ def test_calibration_hash_and_reordered_covariance(tmp_path):
     }
     cal = tmp_path / "calibration.pkl"
     cal.write_bytes(pickle.dumps(calibration))
-    with pytest.raises(ValueError, match="require calibration spline_sha256"):
-        load(path, cal_file=cal)
-    calibration["spline_sha256"] = file_sha256(path)
-    cal.write_bytes(pickle.dumps(calibration))
     f = load(path, cal_file=cal)
     np.testing.assert_allclose(f.params.cov, np.diag([0.09, 0.04, 0.01]))
     np.testing.assert_allclose(f.params.values, [0.02, 0.01, 0])
-    calibration["spline_sha256"] = "0" * 64
-    cal.write_bytes(pickle.dumps(calibration))
-    with pytest.raises(ValueError, match="does not match"):
-        load(path, cal_file=cal)
 
 
 def test_reject_bad_metadata_and_covariance(tmp_path):

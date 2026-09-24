@@ -49,13 +49,28 @@ def validate_covariance(covariance, size):
     return cov.copy()
 
 
-def validate_calibration_identity(calibration, spline_path, required=False):
-    """Bind a new calibration to one or more exact spline artifact hashes."""
-    expected = calibration.get("spline_sha256")
-    if expected is None:
-        if required:
-            raise ValueError("Metadata-bearing splines require calibration spline_sha256")
+def validate_calibration_parameters(calibration, names, required=False):
+    """Bind a calibration to the parameter set by name, number and position.
+
+    A calibration is a fit of the physics parameters, so it applies to every
+    response library with the same parameter vector, whatever sites or
+    quantities that library tabulates. The first ``len(names)`` entries of
+    ``cov_params`` must equal ``names`` in order, and a stored parameter
+    ``number`` must equal that position. Nuisance parameters may follow.
+    Any ``spline_sha256`` entry is provenance only.
+    """
+    if not required:
         return
-    accepted = [expected] if isinstance(expected, str) else expected
-    if not isinstance(accepted, list) or file_sha256(spline_path) not in accepted:
-        raise ValueError("Calibration does not match this spline artifact")
+    names = list(names)
+    order = list(calibration.get("cov_params", []))
+    if order[: len(names)] != names:
+        raise ValueError(
+            "Calibration parameters must match the spline parameters by name and position"
+        )
+    params = calibration.get("params", {})
+    for position, name in enumerate(names):
+        number = params.get(name, {}).get("number", position)
+        if number != position:
+            raise ValueError(
+                f"Calibration parameter {name} has number {number}, not {position}"
+            )

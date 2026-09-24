@@ -27,9 +27,13 @@ No unit prior is inferred. For metadata-bearing files, the uncorrelated-hadronic
 option preserves the supplied variances while removing within-hadronic
 correlations. Legacy files retain their historical unit-diagonal behavior.
 
-A calibration for a metadata-bearing library must contain `spline_sha256`, the
-SHA-256 of the exact spline file (or a list of accepted file hashes when a fit
-calibrates multiple location files). Parameter names alone do not establish
-compatibility. The existing `params`, `cov_params` and `cov_matrix` entries are
-still required. Legacy calibrations need no new field; when supplied, the hash
-is checked for legacy files as well.
+A calibration is a fit of the parameter vector to the muon data, carried out on
+the private experiment library. It is distributed with any downstream library
+that shares that parameter vector: `generic`/USStd, Kamioka, South Pole or other
+custom sites. For a metadata-bearing library, the first entries of `cov_params`
+must therefore equal the library's parameter names in order. A stored `number`
+in `params` must equal the parameter's position. Nuisance parameters may follow
+the physics block. `spline_sha256` may record the library the fit was made
+against; it is provenance only and is not checked on load. The existing
+`params`, `cov_params` and `cov_matrix` entries are still required. Legacy
+libraries keep name-based reordering of the calibration covariance.

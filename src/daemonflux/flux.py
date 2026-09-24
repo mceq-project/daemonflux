@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from .metadata import (
     validate_metadata,
     validate_covariance,
-    validate_calibration_identity,
+    validate_calibration_parameters,
 )
 
 # # Anatoli's installation requires me to add this
@@ -273,8 +273,8 @@ class Flux:
                 if self._debug > 2:
                     print("Loading calibration from", cal_file)
                 calibration_d = pickle.load(f, encoding="latin1")
-            validate_calibration_identity(
-                calibration_d, spl_file, required=self.metadata is not None
+            validate_calibration_parameters(
+                calibration_d, known_pars, required=self.metadata is not None
             )
 
             param_values = []
