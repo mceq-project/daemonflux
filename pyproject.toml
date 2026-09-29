@@ -1,5 +1,50 @@
 [build-system]
-requires = [
-    "setuptools"
-]
+requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "daemonflux"
+version = "0.8.4"
+authors = [
+    {name = "Anatoli Fedynitch", email = "afedynitch@gmail.com"},
+]
+description = "Tabulated representation of a muon-calibrated muon and neutrino flux model"
+readme = "README.md"
+license = {text = "BSD 3-Clause License"}
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "scipy>=1.8.0",
+    "rich",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: BSD License",
+    "License :: OSI Approved :: GNU Library or Lesser General Public License (LGPL)",
+]
+
+[project.urls]
+Homepage = "https://github.com/mceq-project/daemonflux"
+"Bug Tracker" = "https://github.com/mceq-project/daemonflux/issues"
+
+[project.optional-dependencies]
+test = ["pytest"]
+examples = ["matplotlib"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 90
+
+[tool.ruff.lint]
+ignore = ["E203"]

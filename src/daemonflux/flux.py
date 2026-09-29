@@ -27,9 +27,7 @@ class Parameters:
         Covariance matrix of parameters.
     """
 
-    def __init__(
-        self, known_parameters: List[str], values: np.ndarray, cov: np.ndarray
-    ):
+    def __init__(self, known_parameters: List[str], values: np.ndarray, cov: np.ndarray):
         self.known_parameters = known_parameters
         self._n_non_gsf = len([p for p in known_parameters if "GSF" not in p])
         self.values = values
@@ -109,7 +107,7 @@ class Flux:
     )
     _default_spl_file = "daemonsplines_{location}_{rev}.pkl"
     _default_cal_file = "daemonsplines_calibration_{cset}_{rev}.pkl"
-    _revision = "202303_2"
+    _revision = "20260326"
 
     def __init__(
         self,
@@ -168,9 +166,7 @@ class Flux:
         elif use_calibration and cal_file is None:
             cal_file = _cached_data_dir(
                 self._default_url
-                + self._default_cal_file.format(
-                    cset=calibration_set, rev=self._revision
-                )
+                + self._default_cal_file.format(cset=calibration_set, rev=self._revision)
             )
 
         self._load_splines(spl_file, cal_file)
@@ -213,7 +209,14 @@ class Flux:
                 self._jac_spl,
                 cov,
             ) = loaded[:4]
-            self._height_data = loaded[5] if len(loaded) > 5 else None
+            extra = loaded[5] if len(loaded) > 5 else None
+            if isinstance(extra, dict) and "linear_quantities" in extra:
+                self._linear_quantities = extra["linear_quantities"]
+                self._height_data = extra.get("height_data")
+            else:
+                # Old format: index 5 is height_data directly
+                self._linear_quantities = None
+                self._height_data = extra
 
         known_parameters = []
         for k in known_pars:
@@ -235,9 +238,9 @@ class Flux:
                 + f" with the number of parameters {len(known_parameters)}"
             )
         else:
-            assert pathlib.Path(
-                cal_file
-            ).is_file(), f"Calibration file {cal_file} not found."
+            assert pathlib.Path(cal_file).is_file(), (
+                f"Calibration file {cal_file} not found."
+            )
             with open(str(cal_file), "rb") as f:
                 if self._debug > 2:
                     print("Loading calibration from", cal_file)
@@ -260,9 +263,9 @@ class Flux:
             )
             n_physics_params = max(original_param_order.values()) + 1
 
-            assert sorted(original_param_order.keys()) == sorted(
-                known_parameters
-            ), "Parameters inconsistent between spl and calibration file"
+            assert sorted(original_param_order.keys()) == sorted(known_parameters), (
+                "Parameters inconsistent between spl and calibration file"
+            )
 
             # Create a new covariance with the correct order of parameters
             cov = rearrange_covariance(
@@ -299,7 +302,9 @@ class Flux:
         for exp in self._fl_spl:
             # Pass per-experiment height data if available
             exp_height_data = None
-            if self._height_data is not None and exp in self._height_data.get("fl_spl", {}):
+            if self._height_data is not None and exp in self._height_data.get(
+                "fl_spl", {}
+            ):
                 exp_height_data = {
                     "height_grid_km": self._height_data["height_grid_km"],
                     "fl_spl": self._height_data["fl_spl"][exp],
@@ -312,6 +317,7 @@ class Flux:
                 deepcopy(params),
                 self._debug,
                 height_data=exp_height_data,
+                linear_quantities=self._linear_quantities,
             )
             setattr(self, exp, subflux)
             self.supported_fluxes.append(exp)
@@ -429,7 +435,9 @@ class Flux:
             energy, zenith_deg, quantity, params, height_km=height_km
         )
 
-    def error(self, energy, zenith_deg, quantity, only_hadronic=False, exp="", height_km=None):
+    def error(
+        self, energy, zenith_deg, quantity, only_hadronic=False, exp="", height_km=None
+    ):
         """
         The flux of a given quantity for the specified energy energy and zenith angles.
 
@@ -500,6 +508,7 @@ class _FluxEntry(Flux):
         params: Parameters,
         debug: int,
         height_data: dict = None,
+        linear_quantities: set = None,
     ) -> None:
         """
         Initialize a `_FluxEntry` object.
@@ -520,6 +529,9 @@ class _FluxEntry(Flux):
             Per-experiment height grid data ``{"height_grid_km": ...,
             "fl_spl": {ang: {hkey: {dk: spl}}},
             "jac_spl": {ang: {hkey: {pk: {dk: spl}}}}}``.
+        linear_quantities : set, optional
+            Quantities stored as linear (not log) splines. If None (old
+            spline files), falls back to ``_pol`` suffix heuristic.
         """
         self.label = label
         self._fl_spl = fl_spl
@@ -527,6 +539,7 @@ class _FluxEntry(Flux):
         self._params = params
         self._debug = debug
         self._height_data = height_data
+        self._linear_quantities = linear_quantities
         assert self._fl_spl is not None, "Splines have to be initialized"
         assert self._jac_spl is not None, "Jacobians required for error estimate"
         self._spl_contains_average = "average" in self._fl_spl
@@ -535,6 +548,18 @@ class _FluxEntry(Flux):
         self._zenith_deg_arr.sort()
         self._zenith_cos_arr = np.cos(np.deg2rad(self._zenith_deg_arr))
         self._quantities = list(self._fl_spl[list(self._fl_spl.keys())[0]].keys())
+
+    def _is_linear(self, quantity: str) -> bool:
+        """Whether *quantity* was stored as a linear (not log) spline.
+
+        New spline files carry an explicit ``linear_quantities`` set.
+        Old files don't, so we fall back to the ``_pol`` suffix heuristic
+        (ratios were log-stored in older releases).
+        """
+        if self._linear_quantities is not None:
+            return quantity in self._linear_quantities
+        # Fallback for old spline files: only _pol was linear
+        return quantity.endswith("_pol")
 
     @property
     def zenith_angles(self) -> list:
@@ -688,12 +713,15 @@ class _FluxEntry(Flux):
         """
         jac = self._jac_spl[zenith_deg]
         fl = self._fl_spl[zenith_deg]
+        log_e = np.log(energy)
         with self._temporary_parameters(params):
-            corrections = 1 + np.sum(
-                [v * jac[dk][quantity](np.log(energy)) for (dk, v) in self._params],
+            jac_sum = np.sum(
+                [v * jac[dk][quantity](log_e) for (dk, v) in self._params],
                 axis=0,
             )
-        return (np.exp(fl[quantity](np.log(energy))) * corrections).squeeze()
+        if self._is_linear(quantity):
+            return (fl[quantity](log_e) + jac_sum).squeeze()
+        return (np.exp(fl[quantity](log_e)) * (1 + jac_sum)).squeeze()
 
     def _flux_from_interp(
         self,
@@ -741,6 +769,8 @@ class _FluxEntry(Flux):
                 ]
             ).T
             error = np.sqrt(np.diag(grid_cov(jacfl, self._params.cov)))
+            if self._is_linear(quantity):
+                return error.squeeze()
             return (
                 np.exp(self._fl_spl[zenith_deg][quantity](np.log(energy))) * error
             ).squeeze()
