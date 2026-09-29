@@ -782,9 +782,11 @@ class _FluxEntry(Flux):
         ]
         lower = max(domain[0] for domain in domains)
         upper = min(domain[1] for domain in domains)
-        assert np.max(energy) <= upper and np.min(energy) >= lower, (
-            f"Energy out of range for {quantity}: {lower:g} - {upper:g} GeV"
-        )
+        # The knots are stored in log(E); allow for round-off when converting back.
+        tolerance = 1e-12
+        assert np.max(energy) <= upper * (1 + tolerance) and np.min(energy) >= lower * (
+            1 - tolerance
+        ), f"Energy out of range for {quantity}: {lower:g} - {upper:g} GeV"
 
     def _flux_from_spl(
         self,
