@@ -46,4 +46,4 @@ Data files (`src/daemonflux/data/`) are pickled scipy spline objects for differe
 - Flux units: neutrinos use E³-weighted (GeV²/(cm² s sr)), muons use p³-weighted ((GeV/c)²/(cm² s sr))
 - Supported quantities include: `muflux`, `nueflux`, `numuflux`, individual charge/flavor components, ratios, and `total_`-prefixed versions (conventional + prompt)
 - The `flux()` method accepts scalar or array energy arguments
-- Python 3.8+ required; scipy >= 1.8.0 required
+- Python 3.10+ required; scipy >= 1.8.0 required
