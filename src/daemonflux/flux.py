@@ -155,7 +155,7 @@ class Flux:
     )
     _default_spl_file = "daemonsplines_{location}_{rev}.pkl"
     _default_cal_file = "daemonsplines_calibration_{cset}_{rev}.pkl"
-    _revision = "20260326"
+    _revision = "202303_2"
 
     def __init__(
         self,

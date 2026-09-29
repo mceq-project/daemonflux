@@ -364,7 +364,7 @@ def test_default_url(test_flux_calibrated):
         )
         + ".zip"
     )
-    assert test_flux_calibrated._revision == "20260326"
+    assert test_flux_calibrated._revision == "202303_2"
     check_url(url_generic_spl)
 
     for cal_set in ["default", "with_deis"]:
