@@ -1,4 +1,4 @@
-from typing import Dict, Union, Tuple, Generator, List
+from typing import Dict, Optional, Union, Tuple, Generator, List
 import numpy as np
 import pickle
 import pathlib
@@ -17,6 +17,28 @@ from .metadata import (
 
 
 base_path = pathlib.Path(__file__).parent.absolute()
+
+
+def _unpack_extra(extra):
+    """Split the optional sixth item of a spline file into its three parts.
+
+    Over time this slot has held three things, and all of them still load:
+
+    * height-dependent splines on their own (the first height-grid files);
+    * a dictionary with ``linear_quantities`` and, optionally, ``height_data``
+      (the 20260326 splines);
+    * a response-library description with ``schema_version``, which may also
+      carry ``linear_quantities`` and ``height_data``.
+
+    Returns ``(metadata, linear_quantities, height_data)``; absent parts are None.
+    """
+    if not isinstance(extra, dict):
+        return None, None, extra
+    if "schema_version" in extra:
+        return extra, extra.get("linear_quantities"), extra.get("height_data")
+    if "linear_quantities" in extra:
+        return None, extra["linear_quantities"], extra.get("height_data")
+    return None, None, extra
 
 
 class Parameters:
@@ -60,7 +82,10 @@ class Parameters:
             Inverse of the covariance matrix.
         """
         if self.cov is None:
-            raise ValueError("This response library has no parameter covariance")
+            raise ValueError(
+                "This library has no prior covariance yet; load a calibration "
+                "to evaluate uncertainties or parameter shifts"
+            )
         return np.linalg.inv(self.cov)
 
     @property
@@ -73,7 +98,10 @@ class Parameters:
             Array of parameter errors.
         """
         if self.cov is None:
-            raise ValueError("This response library has no parameter covariance")
+            raise ValueError(
+                "This library has no prior covariance yet; load a calibration "
+                "to evaluate uncertainties or parameter shifts"
+            )
         return np.sqrt(np.diag(self.cov))
 
     @property
@@ -127,7 +155,7 @@ class Flux:
     )
     _default_spl_file = "daemonsplines_{location}_{rev}.pkl"
     _default_cal_file = "daemonsplines_calibration_{cset}_{rev}.pkl"
-    _revision = "202303_2"
+    _revision = "20260326"
 
     def __init__(
         self,
@@ -229,9 +257,9 @@ class Flux:
                 self._jac_spl,
                 cov,
             ) = payload[:4]
-        self.metadata = validate_metadata(
-            payload[5] if len(payload) > 5 else None, known_pars
-        )
+        extra = payload[5] if len(payload) > 5 else None
+        metadata, self._linear_quantities, self._height_data = _unpack_extra(extra)
+        self.metadata = validate_metadata(metadata, known_pars)
         groups = (
             None
             if self.metadata is None
@@ -329,14 +357,19 @@ class Flux:
 
         if self._uncorrelated_hadr_errors:
             if params.cov is None:
-                raise ValueError("Cannot decorrelate an unspecified prior")
+                raise ValueError(
+                    "Cannot remove hadronic correlations: this library has no prior covariance"
+                )
             indices = [
                 i
                 for i, p in enumerate(known_parameters)
                 if params.groups[p] == "hadronic"
             ]
-            # Legacy sigma-normalized files historically replace the block by I.
-            # Explicit fractional metadata must preserve its supplied variances.
+            # Remove the correlations between hadronic parameters but keep
+            # the size of each one's uncertainty. Older files are tabulated per
+            # standard deviation, so there each variance is simply one. Files
+            # with a parameter description can use other units, e.g. a
+            # fractional yield change, whose variances must be kept as given.
             diagonal = (
                 np.ones(len(indices))
                 if self.metadata is None
@@ -347,12 +380,24 @@ class Flux:
         # If multiple locations inside the spline file, create a FluxEntry for each
         self.supported_fluxes = []
         for exp in self._fl_spl:
+            # Pass per-experiment height data if available
+            exp_height_data = None
+            if self._height_data is not None and exp in self._height_data.get(
+                "fl_spl", {}
+            ):
+                exp_height_data = {
+                    "height_grid_km": self._height_data["height_grid_km"],
+                    "fl_spl": self._height_data["fl_spl"][exp],
+                    "jac_spl": self._height_data["jac_spl"][exp],
+                }
             subflux = _FluxEntry(
                 exp,
                 self._fl_spl[exp],
                 self._jac_spl[exp],
                 deepcopy(params),
                 self._debug,
+                height_data=exp_height_data,
+                linear_quantities=self._linear_quantities,
             )
             setattr(self, exp, subflux)
             self.supported_fluxes.append(exp)
@@ -436,7 +481,7 @@ class Flux:
         """
         return self._get_flux_instance(exp)._params
 
-    def flux(self, energy, zenith_deg, quantity, params={}, exp=""):
+    def flux(self, energy, zenith_deg, quantity, params={}, exp="", height_km=None):
         """
         The flux of a given quantity for the specified energy energy and zenith angles.
 
@@ -453,6 +498,8 @@ class Flux:
             The type of flux to be returned.
         params : Dict[str, float], optional
             A dictionary of parameter values to shift daemonflux off the baseline.
+        height_km : float, optional
+            Altitude in km. Requires a spline file with height grid. Default: surface.
 
         Returns
         -------
@@ -464,9 +511,13 @@ class Flux:
         Exception
             If `zenith_deg` is "average" but splines do not contain average flux.
         """
-        return self._get_flux_instance(exp).flux(energy, zenith_deg, quantity, params)
+        return self._get_flux_instance(exp).flux(
+            energy, zenith_deg, quantity, params, height_km=height_km
+        )
 
-    def error(self, energy, zenith_deg, quantity, only_hadronic=False, exp=""):
+    def error(
+        self, energy, zenith_deg, quantity, only_hadronic=False, exp="", height_km=None
+    ):
         """
         The flux of a given quantity for the specified energy energy and zenith angles.
 
@@ -483,6 +534,8 @@ class Flux:
         only_hadronic : bool, optional
             Whether to only include the hadronic error, excluding the cosmic ray flux
             error, by default False.
+        height_km : float, optional
+            Altitude in km. Requires a spline file with height grid. Default: surface.
 
         Returns
         -------
@@ -499,6 +552,7 @@ class Flux:
             zenith_deg,
             quantity,
             only_hadronic,
+            height_km=height_km,
         )
 
     def chi2(self, params={}, exp=""):
@@ -533,6 +587,8 @@ class _FluxEntry(Flux):
         jac_spl: dict,
         params: Parameters,
         debug: int,
+        height_data: dict = None,
+        linear_quantities: set = None,
     ) -> None:
         """
         Initialize a `_FluxEntry` object.
@@ -549,17 +605,21 @@ class _FluxEntry(Flux):
             A `Parameters` object containing the parameters.
         debug : int
             The debug level.
-
-        Raises
-        ------
-        AssertionError
-            If the splines are not initialized.
+        height_data : dict, optional
+            Per-experiment height grid data ``{"height_grid_km": ...,
+            "fl_spl": {ang: {hkey: {dk: spl}}},
+            "jac_spl": {ang: {hkey: {pk: {dk: spl}}}}}``.
+        linear_quantities : set, optional
+            Quantities stored as linear (not log) splines. If None (old
+            spline files), falls back to ``_pol`` suffix heuristic.
         """
         self.label = label
         self._fl_spl = fl_spl
         self._jac_spl = jac_spl
         self._params = params
         self._debug = debug
+        self._height_data = height_data
+        self._linear_quantities = linear_quantities
         assert self._fl_spl is not None, "Splines have to be initialized"
         assert self._jac_spl is not None, "Jacobians required for error estimate"
         self._spl_contains_average = "average" in self._fl_spl
@@ -568,6 +628,18 @@ class _FluxEntry(Flux):
         self._zenith_deg_arr.sort()
         self._zenith_cos_arr = np.cos(np.deg2rad(self._zenith_deg_arr))
         self._quantities = list(self._fl_spl[list(self._fl_spl.keys())[0]].keys())
+
+    def _is_linear(self, quantity: str) -> bool:
+        """Whether *quantity* was stored as a linear (not log) spline.
+
+        New spline files carry an explicit ``linear_quantities`` set.
+        Old files don't, so we fall back to the ``_pol`` suffix heuristic
+        (ratios were log-stored in older releases).
+        """
+        if self._linear_quantities is not None:
+            return quantity in self._linear_quantities
+        # Fallback for old spline files: only _pol was linear
+        return quantity.endswith("_pol")
 
     @property
     def zenith_angles(self) -> list:
@@ -636,6 +708,54 @@ class _FluxEntry(Flux):
                 pars.known_parameters
             ) == len(pars.values)
 
+    @property
+    def height_grid(self):
+        """Return the height grid array (km) or None if not available."""
+        if self._height_data is None:
+            return None
+        return self._height_data["height_grid_km"]
+
+    @contextmanager
+    def _at_height(self, height_km: float):
+        """Temporarily rebind splines to the exact height level."""
+        if self._height_data is None:
+            raise ValueError(
+                "No height grid in this spline file. "
+                "Regenerate with a height-grid config."
+            )
+        height_grid = self._height_data["height_grid_km"]
+        matches = np.where(height_grid == height_km)[0]
+        if len(matches) == 0:
+            raise ValueError(
+                f"{height_km} km is not in the height grid. "
+                f"Valid values: {list(height_grid)}. "
+                "Inspect available values with flux.height_grid (on the Flux object) "
+                "or flux_entry.height_grid (on a _FluxEntry object)."
+            )
+        ih = int(matches[0])
+        hkey = f"h_{ih}"
+
+        orig_fl_spl = self._fl_spl
+        orig_jac_spl = self._jac_spl
+        # Restructure from {ang: {hkey: {dk: spl}}} → {ang: {dk: spl}}
+        self._fl_spl = {
+            ang: self._height_data["fl_spl"][ang][hkey]
+            for ang in orig_fl_spl
+            if ang in self._height_data["fl_spl"]
+            and hkey in self._height_data["fl_spl"][ang]
+        }
+        self._jac_spl = {
+            ang: self._height_data["jac_spl"][ang][hkey]
+            for ang in orig_jac_spl
+            if ang in self._height_data["jac_spl"]
+            and hkey in self._height_data["jac_spl"][ang]
+        }
+        try:
+            yield
+        finally:
+            self._fl_spl = orig_fl_spl
+            self._jac_spl = orig_jac_spl
+
     def _check_input(self, energy: Union[np.ndarray, float], quantity: str) -> None:
         """
         Check the validity of the input energy and quantity.
@@ -689,12 +809,15 @@ class _FluxEntry(Flux):
         """
         jac = self._jac_spl[zenith_deg]
         fl = self._fl_spl[zenith_deg]
+        log_e = np.log(energy)
         with self._temporary_parameters(params):
-            corrections = 1 + np.sum(
-                [v * jac[dk][quantity](np.log(energy)) for (dk, v) in self._params],
+            jac_sum = np.sum(
+                [v * jac[dk][quantity](log_e) for (dk, v) in self._params],
                 axis=0,
             )
-        return (np.exp(fl[quantity](np.log(energy))) * corrections).squeeze()
+        if self._is_linear(quantity):
+            return (fl[quantity](log_e) + jac_sum).squeeze()
+        return (np.exp(fl[quantity](log_e)) * (1 + jac_sum)).squeeze()
 
     def _flux_from_interp(
         self,
@@ -727,7 +850,10 @@ class _FluxEntry(Flux):
         only_hadronic: bool,
     ) -> np.ndarray:
         if self._params.cov is None:
-            raise ValueError("This response library has no parameter covariance")
+            raise ValueError(
+                "This library has no prior covariance yet; load a calibration "
+                "to evaluate uncertainties or parameter shifts"
+            )
         if self._debug > 2:
             print(
                 f"Return {quantity} flux for {zenith_deg}, only_hadronic=",
@@ -744,6 +870,8 @@ class _FluxEntry(Flux):
                 ]
             ).T
             error = np.sqrt(np.diag(grid_cov(jacfl, self._params.cov)))
+            if self._is_linear(quantity):
+                return error.squeeze()
             return (
                 np.exp(self._fl_spl[zenith_deg][quantity](np.log(energy))) * error
             ).squeeze()
@@ -818,6 +946,7 @@ class _FluxEntry(Flux):
         zenith_deg: Union[float, str, np.ndarray],
         quantity: str,
         params: Dict[str, float] = {},
+        height_km: Optional[float] = None,
     ) -> Union[float, np.ndarray]:
         """
         Compute the flux at the given energy energy, zenith angle, and quantity.
@@ -833,6 +962,9 @@ class _FluxEntry(Flux):
             The type of flux to be returned.
         params : Dict[str, float], optional
             A dictionary of parameter values to shift daemonflux off the baseline.
+        height_km : float, optional
+            Altitude in km at which to evaluate the flux. Requires a spline file
+            generated with a height grid. If None, returns the surface flux.
 
         Returns
         -------
@@ -844,6 +976,10 @@ class _FluxEntry(Flux):
         Exception
             If `zenith_deg` is "average" but splines do not contain average flux.
         """
+        if height_km is not None:
+            with self._at_height(height_km):
+                return self.flux(energy, zenith_deg, quantity, params)
+
         self._check_input(energy, quantity)
         # handle the case where the zenith angle is "average"
         if isinstance(zenith_deg, str) and zenith_deg == "average":
@@ -865,6 +1001,7 @@ class _FluxEntry(Flux):
         zenith_deg: Union[float, str],
         quantity: str,
         only_hadronic: bool = False,
+        height_km: Optional[float] = None,
     ) -> Union[float, np.ndarray]:
         """
         Return the error of the flux estimation for the given parameters.
@@ -882,6 +1019,9 @@ class _FluxEntry(Flux):
         only_hadronic : bool, optional
             Whether to only include the hadronic error, excluding the cosmic ray flux
             error, by default False.
+        height_km : float, optional
+            Altitude in km at which to evaluate the error. Requires a spline file
+            generated with a height grid. If None, returns the surface error.
 
         Returns
         -------
@@ -893,6 +1033,10 @@ class _FluxEntry(Flux):
         Exception
             If `zenith_deg` is "average" but splines do not contain average flux.
         """
+        if height_km is not None:
+            with self._at_height(height_km):
+                return self.error(energy, zenith_deg, quantity, only_hadronic)
+
         self._check_input(energy, quantity)
 
         # handle the case where the zenith angle is "average"

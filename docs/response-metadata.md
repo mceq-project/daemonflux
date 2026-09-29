@@ -1,7 +1,16 @@
-# Response-library metadata
+# Describing the parameters of a spline library
 
-Legacy four- and five-item spline payloads remain supported. A new library can
-append a sixth dictionary:
+A daemonflux spline file holds the nominal fluxes together with their
+derivatives with respect to a set of model parameters: hadronic-yield knobs
+and cosmic-ray (primary) flux parameters. Older files only list the parameter
+names, and daemonflux guessed what each one meant from its name, e.g. anything
+containing `GSF` was taken to be a primary-flux parameter. New libraries can
+say this explicitly.
+
+## The parameter description
+
+The description is an optional dictionary stored after the covariance in the
+spline file:
 
 ```python
 metadata = {
@@ -13,27 +22,55 @@ metadata = {
 }
 ```
 
-The parameter order must exactly match the payload labels. Groups determine
-hadronic-only errors, independently of naming and position. Covariance and
-calibrated values must use the units of the stored Jacobian. This metadata is
-available as `Flux.metadata`; it does not convert parameter units. The public
-`params` argument continues to express shifts in covariance-derived standard
-deviations.
+Each parameter says which group it belongs to (`hadronic` or `primary`) and in
+which units its derivative is tabulated:
 
-A library whose priors have not been chosen may store `None` as its covariance.
-It supports nominal flux evaluation, but uncertainty evaluation and sigma-based
-parameter shifts raise an error until a calibration supplies a covariance.
-No unit prior is inferred. For metadata-bearing files, the uncorrelated-hadronic
-option preserves the supplied variances while removing within-hadronic
-correlations. Legacy files retain their historical unit-diagonal behavior.
+- `fractional`: the derivative is per unit relative change, e.g. per +100% of a
+  yield;
+- `sigma`: the derivative is per one standard deviation of its prior.
 
-A calibration is a fit of the parameter vector to the muon data, carried out on
-the private experiment library. It is distributed with any downstream library
-that shares that parameter vector: `generic`/USStd, Kamioka, South Pole or other
-custom sites. For a metadata-bearing library, the first entries of `cov_params`
-must therefore equal the library's parameter names in order. A stored `number`
-in `params` must equal the parameter's position. Nuisance parameters may follow
-the physics block. `spline_sha256` may record the library the fit was made
-against; it is provenance only and is not checked on load. The existing
-`params`, `cov_params` and `cov_matrix` entries are still required. Legacy
-libraries keep name-based reordering of the calibration covariance.
+The list must follow the same order as the parameters in the file. The
+`hadronic` and `primary` groups decide what `only_hadronic` uncertainties
+contain, whatever the parameters are called and wherever they sit. The
+description is available as `Flux.metadata`, for reference only: daemonflux
+does not convert between units. As before, the `params` argument of
+`Flux.flux` takes shifts in standard deviations of the covariance.
+
+Files without a description load exactly as they always did.
+
+## Libraries without priors
+
+Sometimes a library is produced before its priors are settled. It can then
+store `None` instead of a covariance matrix. Such a library evaluates the
+nominal flux normally. Uncertainties and parameter shifts, which need a
+covariance, raise an error until a calibration provides one. daemonflux never
+invents a default prior.
+
+With `uncorrelated_hadr_errors=True`, correlations between hadronic parameters
+are removed. For a library with a description, each hadronic parameter keeps
+its own variance. Older files keep their historical behaviour, where every
+hadronic variance is set to one.
+
+## Which calibrations fit which library
+
+A calibration is a fit of the model parameters to muon data. The fit is done
+once, on the library that contains the muon experiments. The result applies
+to every library built with the same parameters: the generic US Standard
+atmosphere, Kamioka, the South Pole or any other site.
+
+daemonflux therefore checks the parameters, not the file. For a library with a
+description, the first entries of the calibration's `cov_params` must be the
+library's parameters, with the same names in the same order. If a calibration
+entry records its position as `number`, that must agree too. Nuisance
+parameters of the fit, such as detector systematics, may follow. A
+`spline_sha256` entry may record which file the fit was made with; it is kept
+for bookkeeping and not checked. The `params`, `cov_params` and `cov_matrix`
+entries are required as before. Calibrations for older files are still matched
+by parameter name.
+
+## Other contents of the same slot
+
+The same slot has also held height-dependent splines (`height_data`) and a
+list of quantities evaluated on a linear rather than logarithmic scale
+(`linear_quantities`). Files in either form keep loading. A library with a
+description can carry both as additional keys of the same dictionary.

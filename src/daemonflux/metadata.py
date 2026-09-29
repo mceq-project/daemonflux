@@ -65,7 +65,8 @@ def validate_calibration_parameters(calibration, names, required=False):
     order = list(calibration.get("cov_params", []))
     if order[: len(names)] != names:
         raise ValueError(
-            "Calibration parameters must match the spline parameters by name and position"
+            "The calibration was fitted with different parameters: the first "
+            "cov_params entries must be the library parameters, in the same order"
         )
     params = calibration.get("params", {})
     for position, name in enumerate(names):

@@ -50,9 +50,9 @@ def test_nominal_without_invented_prior(tmp_path):
     path, _ = library(tmp_path)
     f = load(path, use_calibration=False)
     np.testing.assert_allclose(f.flux([2.0, 3.0], 0, "numuflux"), np.exp(2))
-    with pytest.raises(ValueError, match="no parameter covariance"):
+    with pytest.raises(ValueError, match="no prior covariance"):
         f.error([2.0], 0, "numuflux")
-    with pytest.raises(ValueError, match="no parameter covariance"):
+    with pytest.raises(ValueError, match="no prior covariance"):
         f.flux([2.0], 0, "numuflux", params={"yield_a": 1})
 
 
@@ -93,7 +93,7 @@ def test_calibration_binds_by_parameter_position(tmp_path):
 
     calibration["cov_params"] = names[::-1] + ["nuisance"]
     cal.write_bytes(pickle.dumps(calibration))
-    with pytest.raises(ValueError, match="name and position"):
+    with pytest.raises(ValueError, match="different parameters"):
         load(path, cal_file=cal)
 
     calibration["cov_params"] = names + ["nuisance"]
@@ -149,3 +149,19 @@ def test_energy_range_follows_spline_domain(tmp_path):
     assert np.isfinite(flux.flux(upper, 0, "numuflux"))
     with pytest.raises(AssertionError, match="Energy out of range for numuflux"):
         flux.flux(1.01 * upper, 0, "numuflux")
+
+
+def test_sixth_item_layouts():
+    from daemonflux.flux import _unpack_extra
+
+    heights = {"height_grid_km": [0.0, 1.0], "fl_spl": {}, "jac_spl": {}}
+    metadata = {
+        "schema_version": 1,
+        "parameters": [],
+        "linear_quantities": {"muratio"},
+        "height_data": heights,
+    }
+    assert _unpack_extra(None) == (None, None, None)
+    assert _unpack_extra(heights) == (None, None, heights)
+    assert _unpack_extra({"linear_quantities": {"muratio"}}) == (None, {"muratio"}, None)
+    assert _unpack_extra(metadata) == (metadata, {"muratio"}, heights)
