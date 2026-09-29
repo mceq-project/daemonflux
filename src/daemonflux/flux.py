@@ -4,6 +4,11 @@ import pickle
 import pathlib
 from .utils import grid_cov, is_iterable, format_angle, _cached_data_dir
 from contextlib import contextmanager
+from .metadata import (
+    validate_metadata,
+    validate_covariance,
+    validate_calibration_parameters,
+)
 
 # # Anatoli's installation requires me to add this
 # import sys
@@ -12,6 +17,28 @@ from contextlib import contextmanager
 
 
 base_path = pathlib.Path(__file__).parent.absolute()
+
+
+def _unpack_extra(extra):
+    """Split the optional sixth item of a spline file into its three parts.
+
+    Over time this slot has held three things, and all of them still load:
+
+    * height-dependent splines on their own (the first height-grid files);
+    * a dictionary with ``linear_quantities`` and, optionally, ``height_data``
+      (the 20260326 splines);
+    * a response-library description with ``schema_version``, which may also
+      carry ``linear_quantities`` and ``height_data``.
+
+    Returns ``(metadata, linear_quantities, height_data)``; absent parts are None.
+    """
+    if not isinstance(extra, dict):
+        return None, None, extra
+    if "schema_version" in extra:
+        return extra, extra.get("linear_quantities"), extra.get("height_data")
+    if "linear_quantities" in extra:
+        return None, extra["linear_quantities"], extra.get("height_data")
+    return None, None, extra
 
 
 class Parameters:
@@ -27,9 +54,20 @@ class Parameters:
         Covariance matrix of parameters.
     """
 
-    def __init__(self, known_parameters: List[str], values: np.ndarray, cov: np.ndarray):
+    def __init__(
+        self,
+        known_parameters: List[str],
+        values: np.ndarray,
+        cov: np.ndarray,
+        groups=None,
+    ):
         self.known_parameters = known_parameters
-        self._n_non_gsf = len([p for p in known_parameters if "GSF" not in p])
+        self.groups = (
+            dict(groups)
+            if groups is not None
+            else {p: "primary" if "GSF" in p else "hadronic" for p in known_parameters}
+        )
+        self._n_non_gsf = sum(self.groups[p] == "hadronic" for p in known_parameters)
         self.values = values
         self._unmodified_values = np.copy(values)
         self.cov = cov
@@ -43,6 +81,11 @@ class Parameters:
         np.ndarray, shape (n_params, n_params)
             Inverse of the covariance matrix.
         """
+        if self.cov is None:
+            raise ValueError(
+                "This library has no prior covariance yet; load a calibration "
+                "to evaluate uncertainties or parameter shifts"
+            )
         return np.linalg.inv(self.cov)
 
     @property
@@ -54,6 +97,11 @@ class Parameters:
         np.ndarray, shape (n_params,)
             Array of parameter errors.
         """
+        if self.cov is None:
+            raise ValueError(
+                "This library has no prior covariance yet; load a calibration "
+                "to evaluate uncertainties or parameter shifts"
+            )
         return np.sqrt(np.diag(self.cov))
 
     @property
@@ -202,21 +250,23 @@ class Flux:
         with open(spl_file, "rb") as f:
             if self._debug > 2:
                 print("Loading splines from", spl_file)
-            loaded = pickle.load(f)
+            payload = pickle.load(f)
             (
                 known_pars,
                 self._fl_spl,
                 self._jac_spl,
                 cov,
-            ) = loaded[:4]
-            extra = loaded[5] if len(loaded) > 5 else None
-            if isinstance(extra, dict) and "linear_quantities" in extra:
-                self._linear_quantities = extra["linear_quantities"]
-                self._height_data = extra.get("height_data")
-            else:
-                # Old format: index 5 is height_data directly
-                self._linear_quantities = None
-                self._height_data = extra
+            ) = payload[:4]
+        extra = payload[5] if len(payload) > 5 else None
+        metadata, self._linear_quantities, self._height_data = _unpack_extra(extra)
+        self.metadata = validate_metadata(metadata, known_pars)
+        groups = (
+            None
+            if self.metadata is None
+            else {p["name"]: p["group"] for p in self.metadata["parameters"]}
+        )
+        if self.metadata is not None:
+            cov = validate_covariance(cov, len(known_pars))
 
         known_parameters = []
         for k in known_pars:
@@ -228,12 +278,18 @@ class Flux:
 
         if cal_file is None:
             print("No calibration used.")
+            keep = [known_pars.index(p) for p in known_parameters]
+            if cov is not None:
+                cov = np.asarray(cov)[np.ix_(keep, keep)]
             params = Parameters(
                 known_parameters,
                 np.zeros(len(known_parameters)),
                 cov,
+                groups=groups,
             )
-            assert params.cov.shape == (len(known_parameters),) * 2, (
+            assert (
+                params.cov is None or params.cov.shape == (len(known_parameters),) * 2
+            ), (
                 f"covariance shape {params.cov.shape} is not consistent"
                 + f" with the number of parameters {len(known_parameters)}"
             )
@@ -245,6 +301,9 @@ class Flux:
                 if self._debug > 2:
                     print("Loading calibration from", cal_file)
                 calibration_d = pickle.load(f, encoding="latin1")
+            validate_calibration_parameters(
+                calibration_d, known_pars, required=self.metadata is not None
+            )
 
             param_values = []
             for ip, n in enumerate(known_parameters):
@@ -290,12 +349,33 @@ class Flux:
                         + " incorrectly sorted."
                     )
 
-            params = Parameters(known_parameters, np.asarray(param_values), cov)
+            if self.metadata is not None:
+                cov = validate_covariance(cov, len(known_parameters))
+            params = Parameters(
+                known_parameters, np.asarray(param_values), cov, groups=groups
+            )
 
         if self._uncorrelated_hadr_errors:
-            params.cov[: params._n_non_gsf, : params._n_non_gsf] = np.diag(
-                np.ones(params._n_non_gsf)
+            if params.cov is None:
+                raise ValueError(
+                    "Cannot remove hadronic correlations: this library has no prior covariance"
+                )
+            indices = [
+                i
+                for i, p in enumerate(known_parameters)
+                if params.groups[p] == "hadronic"
+            ]
+            # Remove the correlations between hadronic parameters but keep
+            # the size of each one's uncertainty. Older files are tabulated per
+            # standard deviation, so there each variance is simply one. Files
+            # with a parameter description can use other units, e.g. a
+            # fractional yield change, whose variances must be kept as given.
+            diagonal = (
+                np.ones(len(indices))
+                if self.metadata is None
+                else np.diag(params.cov)[indices]
             )
+            params.cov[np.ix_(indices, indices)] = np.diag(diagonal)
 
         # If multiple locations inside the spline file, create a FluxEntry for each
         self.supported_fluxes = []
@@ -378,9 +458,9 @@ class Flux:
         'nue', 'antinue'. The quantities are the same for all locations. Those with
         'flux' in the names sums over conventional 'mu+' and 'mu-', and neutrino and
         antineutrino, respectively. Those with 'ratio' in the names are the ratios of
-        the fluxes. A second set of quantities is available with the 'total_' prefix,
-        which includes is a sum of the conventional and prompt fluxes. The latter are
-        calculated with the SIBYLL2.3d hadronic interaction model.
+        the fluxes. Files with separated production channels also expose prompt
+        quantities with the 'pr_' prefix and conventional-plus-prompt quantities with
+        the 'total_' prefix.
 
         Parameters
         ----------
@@ -604,22 +684,29 @@ class _FluxEntry(Flux):
             new_values = []
             keep_cov = []
             for ik, k in enumerate(pars.known_parameters):
-                if exclude_str in k:
+                if (exclude_str == "GSF" and pars.groups[k] == "primary") or (
+                    exclude_str != "GSF" and exclude_str in k
+                ):
                     continue
                 new_kp.append(k)
                 new_values.append(pars.values[ik])
                 keep_cov.append(ik)
 
-            pars.cov = np.take(np.take(pars.cov, keep_cov, axis=0), keep_cov, axis=1)
+            if pars.cov is not None:
+                pars.cov = np.take(np.take(pars.cov, keep_cov, axis=0), keep_cov, axis=1)
             pars.values = np.asarray(new_values)
             pars.known_parameters = new_kp
 
-            assert pars.cov.shape[0] == len(pars.known_parameters) == len(pars.values)
+            assert pars.cov is None or pars.cov.shape[0] == len(
+                pars.known_parameters
+            ) == len(pars.values)
 
             yield
 
             self._params = prev
-            assert pars.cov.shape[0] == len(pars.known_parameters) == len(pars.values)
+            assert pars.cov is None or pars.cov.shape[0] == len(
+                pars.known_parameters
+            ) == len(pars.values)
 
     @property
     def height_grid(self):
@@ -685,10 +772,21 @@ class _FluxEntry(Flux):
         AssertionError
             If the energy energy is out of range or if the quantity is unknown.
         """
-        assert np.max(energy) <= 1e9 and np.min(energy) >= 5e-2, "Energy out of range"
         assert quantity in self._quantities, "Quantity must be one of {0}.".format(
             ", ".join(self._quantities)
         )
+        domains = [
+            np.exp(splines[quantity].get_knots()[[0, -1]])
+            for splines in self._fl_spl.values()
+            if quantity in splines
+        ]
+        lower = max(domain[0] for domain in domains)
+        upper = min(domain[1] for domain in domains)
+        # The knots are stored in log(E); allow for round-off when converting back.
+        tolerance = 1e-12
+        assert np.max(energy) <= upper * (1 + tolerance) and np.min(energy) >= lower * (
+            1 - tolerance
+        ), f"Energy out of range for {quantity}: {lower:g} - {upper:g} GeV"
 
     def _flux_from_spl(
         self,
@@ -753,6 +851,11 @@ class _FluxEntry(Flux):
         quantity: str,
         only_hadronic: bool,
     ) -> np.ndarray:
+        if self._params.cov is None:
+            raise ValueError(
+                "This library has no prior covariance yet; load a calibration "
+                "to evaluate uncertainties or parameter shifts"
+            )
         if self._debug > 2:
             print(
                 f"Return {quantity} flux for {zenith_deg}, only_hadronic=",
