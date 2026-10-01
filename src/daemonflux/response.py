@@ -18,6 +18,19 @@ Layout (HDF5)::
         value       nominal weighted flux, positive
         jacobian    (n_params, n) relative first derivative d ln F / d a
         curvature   optional (n_params, n) relative second derivative
+    /underground/<label>    optional (e.g. "total-ug-wipp", "depth-ug-LNGS");
+                            attr "metadata": JSON text (kind, units, site)
+    /underground/<label>/<species>/
+        x           slant depth in km.w.e. (depth curves) or one entry (totals)
+        value       nominal underground muon flux or intensity, positive
+        jacobian    (n_params + n_underground, n): file parameters, then the
+                    underground parameters listed in metadata
+        curvature   optional, same shape
+
+Underground tables fold the surface responses through muon transport in rock
+(e.g. MUTE). Their extra parameters (rock densities) are experiment nuisances:
+they are listed under ``underground_parameters`` and are not part of the
+parameter basis, so calibrations bind as before.
 
 Response model, for parameter values theta and multipliers a = g(theta)
 (``transform`` "linear": a = theta; "log": a = exp(theta) - 1)::
@@ -43,6 +56,7 @@ FORMAT_VERSION = 2
 BUNDLE_FORMAT = "daemonflux-bundle"
 INTERPOLATIONS = ("linear", "cubic")
 GROUPS = ("hadronic", "primary")
+UNDERGROUND_GROUPS = ("underground",)
 UNITS = ("fractional", "sigma")
 COMBINATIONS = ("additive", "factor")
 TRANSFORMS = ("linear", "log")
@@ -68,7 +82,7 @@ def basis_sha256(parameters):
     return hashlib.sha256(json.dumps(basis).encode()).hexdigest()
 
 
-def normalize_parameters(parameters):
+def normalize_parameters(parameters, groups=GROUPS):
     """Validate parameter descriptions and fill the version-2 defaults."""
     out, names = [], set()
     for p in parameters:
@@ -80,8 +94,8 @@ def normalize_parameters(parameters):
         q = dict(p)
         q.setdefault("combination", "additive")
         q.setdefault("transform", "linear")
-        if q.get("group") not in GROUPS:
-            raise ValueError(f"{q['name']}: group must be one of {GROUPS}")
+        if q.get("group") not in groups:
+            raise ValueError(f"{q['name']}: group must be one of {groups}")
         if q.get("units") not in UNITS:
             raise ValueError(f"{q['name']}: units must be one of {UNITS}")
         if q["combination"] not in COMBINATIONS:
@@ -146,7 +160,7 @@ class ResponseTable:
         jacobian = np.atleast_2d(np.asarray(jacobian, dtype=float))
         if interpolation not in INTERPOLATIONS:
             raise ValueError(f"Unknown interpolation {interpolation}")
-        if x.ndim != 1 or x.size < 2 or np.any(x <= 0) or np.any(np.diff(x) <= 0):
+        if x.ndim != 1 or x.size < 1 or np.any(x <= 0) or np.any(np.diff(x) <= 0):
             raise ValueError("Abscissa must be positive and strictly increasing")
         if value.shape != x.shape or np.any(value <= 0) or not np.isfinite(value).all():
             raise ValueError("Nominal values must be positive and finite on the grid")
@@ -177,7 +191,9 @@ class ResponseTable:
     def interpolate(self, log_e):
         """Return (F0, J, C) at ``log_e``; C is None without curvature."""
         log_e = np.atleast_1d(np.asarray(log_e, dtype=float))
-        if self._spline is not None:
+        if self.x.size == 1:  # a single value (e.g. an underground total)
+            stack = np.repeat(self._stack, log_e.size, axis=1)
+        elif self._spline is not None:
             stack = self._spline(log_e)
         else:
             i = np.clip(np.searchsorted(self.log_x, log_e) - 1, 0, self.x.size - 2)
@@ -191,8 +207,8 @@ class ResponseTable:
 class ResponseModel:
     """Combine per-parameter responses into a flux and its parameter gradient."""
 
-    def __init__(self, parameters):
-        self.parameters = normalize_parameters(parameters)
+    def __init__(self, parameters, groups=GROUPS):
+        self.parameters = normalize_parameters(parameters, groups)
         self.names = [p["name"] for p in self.parameters]
         self.factor = np.array([p["combination"] == "factor" for p in self.parameters])
         self.log = np.array([p["transform"] == "log" for p in self.parameters])
@@ -244,6 +260,9 @@ class ResponseLibrary:
         self.profiles = {}
         self.profile_metadata = {}
         self.derived = {}
+        self.underground_parameters = []
+        self.underground = {}
+        self.underground_metadata = {}
         self.files = []
 
     @property
@@ -314,11 +333,40 @@ class ResponseLibrary:
                 derived = default_derived(species)
                 derived.update(_parse_derived(meta.get("derived"), species))
                 self.derived[profile] = derived
+            self._add_underground(h5, meta, path.name, interpolation)
         meta["file"] = path.name
         meta["sha256"] = sha
         self.metadata.append(meta)
         self.files.append({"path": str(path), "sha256": sha})
         return self
+
+
+    def _add_underground(self, h5, meta, name, interpolation):
+        if "underground" not in h5:
+            return
+        extra = normalize_parameters(
+            meta.get("underground_parameters", []), UNDERGROUND_GROUPS
+        ) if meta.get("underground_parameters") else []
+        if self.underground and extra != self.underground_parameters:
+            raise ValueError(f"{name}: underground parameters differ from earlier files")
+        self.underground_parameters = extra
+        rows = len(self.parameters) + len(extra)
+        for label, group in h5["underground"].items():
+            if label in self.underground:
+                raise ValueError(f"Underground table {label} appears in more than one file")
+            self.underground_metadata[label] = json.loads(group.attrs.get("metadata", "{}"))
+            tables = {}
+            for species, d in group.items():
+                tables[species] = ResponseTable(
+                    d["x"][()],
+                    d["value"][()],
+                    d["jacobian"][()],
+                    d["curvature"][()] if "curvature" in d else None,
+                    interpolation,
+                )
+                if tables[species].n_params != rows:
+                    raise ValueError(f"underground/{label}/{species}: wrong jacobian rows")
+            self.underground[label] = tables
 
 
 def read_response_files(paths, expected=None):
@@ -344,6 +392,8 @@ def write_response_file(
     covariance=None,
     primary_covariance=None,
     profile_metadata=None,
+    underground=None,
+    underground_metadata=None,
 ):
     """Write a version-2 response file atomically and return its sha256.
 
@@ -351,6 +401,10 @@ def write_response_file(
     ``jacobian`` and optionally ``curvature``. ``metadata`` must contain
     ``parameters``; ``energy_interpolation`` defaults to "linear". Species
     tables are validated with the same checks the reader applies.
+
+    ``underground[label][species]`` holds underground tables whose jacobians
+    have one row per file parameter followed by one per entry of
+    ``metadata["underground_parameters"]``.
     """
     import h5py
 
@@ -362,7 +416,12 @@ def write_response_file(
     meta["basis_sha256"] = basis_sha256(meta["parameters"])
     meta["format"], meta["format_version"] = FORMAT, FORMAT_VERSION
     n = len(meta["parameters"])
-    if not profiles:
+    if meta.get("underground_parameters"):
+        meta["underground_parameters"] = normalize_parameters(
+            meta["underground_parameters"], UNDERGROUND_GROUPS
+        )
+    n_underground = n + len(meta.get("underground_parameters", []))
+    if not profiles and not underground:
         raise ValueError("A response file needs at least one profile")
     path = pathlib.Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -379,7 +438,7 @@ def write_response_file(
                 if matrix is not None:
                     h5.create_dataset(key, data=np.asarray(matrix, dtype=float))
             root = h5.create_group("profiles")
-            for profile, angles in profiles.items():
+            for profile, angles in (profiles or {}).items():
                 group = root.create_group(profile)
                 group.attrs["metadata"] = json.dumps(
                     (profile_metadata or {}).get(profile, {}), default=_json_default
@@ -404,6 +463,30 @@ def write_response_file(
                         d.create_dataset("jacobian", data=checked.jacobian, **opts)
                         if checked.curvature is not None:
                             d.create_dataset("curvature", data=checked.curvature, **opts)
+            if underground:
+                root = h5.create_group("underground")
+            for label, species in (underground or {}).items():
+                if "/" in label:
+                    raise ValueError(f"Underground label {label} must not contain '/'")
+                group = root.create_group(label)
+                group.attrs["metadata"] = json.dumps(
+                    (underground_metadata or {}).get(label, {}), default=_json_default
+                )
+                for name, table in species.items():
+                    checked = ResponseTable(
+                        table["x"], table["value"], table["jacobian"], table.get("curvature")
+                    )
+                    if checked.n_params != n_underground:
+                        raise ValueError(
+                            f"underground/{label}/{name}: {checked.n_params} rows, "
+                            f"{n_underground} parameters"
+                        )
+                    d = group.create_group(name)
+                    d.create_dataset("x", data=checked.x)
+                    d.create_dataset("value", data=checked.value)
+                    d.create_dataset("jacobian", data=checked.jacobian)
+                    if checked.curvature is not None:
+                        d.create_dataset("curvature", data=checked.curvature)
         umask = os.umask(0)
         os.umask(umask)
         os.chmod(tmp, 0o666 & ~umask)
