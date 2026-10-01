@@ -15,6 +15,7 @@ requires-python = ">=3.10"
 dependencies = [
     "numpy",
     "scipy>=1.8.0",
+    "h5py>=3.0",
     "rich",
 ]
 classifiers = [

@@ -168,6 +168,7 @@ class Flux:
         exclude=[],
         keep_old_revisions=False,
         debug=1,
+        bundle=None,
     ) -> None:
         """
         Initialize the Flux instance.
@@ -176,8 +177,9 @@ class Flux:
         ----------
         location : str, optional
             Location to be used, default is "generic".
-        spl_file : str, optional
-            Path to the spline file.
+        spl_file : str or list of str, optional
+            Path to a spline file, or to one or more response files (format
+            version 2) that share a parameter basis.
         cal_file : str, optional
             Path to the calibration file.
         use_calibration : bool, optional
@@ -193,10 +195,28 @@ class Flux:
             Flag indicating whether to keep old spline file revisions, default is False.
         debug : int, optional
             Debug level, default is 1.
+        bundle : str, optional
+            Path to a bundle manifest listing response files and a calibration
+            with their sha256. Every file is verified before it is used.
         """
         self.exclude = exclude
         self._debug = debug
         self._uncorrelated_hadr_errors = uncorrelated_hadr_errors
+
+        self._expected_sha256 = {}
+        self.bundle = None
+        if bundle is not None:
+            from .response import read_bundle
+
+            self.bundle, files, calibration = read_bundle(bundle)
+            spl_file = [f for f, _ in files]
+            self._expected_sha256 = {f: sha for f, sha in files if sha}
+            if calibration is not None and use_calibration and cal_file is None:
+                cal_file = calibration[0]
+                if calibration[1]:
+                    self._expected_sha256[cal_file] = calibration[1]
+            if cal_file is None:
+                use_calibration = False
 
         # Define location or spl_file
         assert location or spl_file, "Either location or spl_file must be defined."
@@ -227,7 +247,7 @@ class Flux:
         """
         import pathlib
 
-        for f in pathlib.Path(base_path / "data").glob("daemonsplines*"):
+        for f in pathlib.Path(base_path / "data").glob("daemonsplines*.pkl"):
             if self._revision not in str(f):
                 print("Removing old version", f)
                 f.unlink()
@@ -243,10 +263,16 @@ class Flux:
         cal_file : str
             Path to the calibration file.
         """
-        from .utils import rearrange_covariance
         from copy import deepcopy
 
-        assert pathlib.Path(spl_file).is_file(), f"Spline file {spl_file} not found."
+        from .response import is_response_file
+
+        paths = [spl_file] if isinstance(spl_file, (str, pathlib.Path)) else list(spl_file)
+        for path in paths:
+            assert pathlib.Path(path).is_file(), f"Spline file {path} not found."
+        if len(paths) > 1 or is_response_file(paths[0]):
+            return self._load_responses(paths, cal_file)
+        spl_file = paths[0]
         with open(spl_file, "rb") as f:
             if self._debug > 2:
                 print("Loading splines from", spl_file)
@@ -268,6 +294,79 @@ class Flux:
         if self.metadata is not None:
             cov = validate_covariance(cov, len(known_pars))
 
+        params = self._make_parameters(known_pars, cov, groups, cal_file)
+
+        # If multiple locations inside the spline file, create a FluxEntry for each
+        self.supported_fluxes = []
+        for exp in self._fl_spl:
+            # Pass per-experiment height data if available
+            exp_height_data = None
+            if self._height_data is not None and exp in self._height_data.get(
+                "fl_spl", {}
+            ):
+                exp_height_data = {
+                    "height_grid_km": self._height_data["height_grid_km"],
+                    "fl_spl": self._height_data["fl_spl"][exp],
+                    "jac_spl": self._height_data["jac_spl"][exp],
+                }
+            subflux = _FluxEntry(
+                exp,
+                self._fl_spl[exp],
+                self._jac_spl[exp],
+                deepcopy(params),
+                self._debug,
+                height_data=exp_height_data,
+                linear_quantities=self._linear_quantities,
+            )
+            setattr(self, exp, subflux)
+            self.supported_fluxes.append(exp)
+
+    def _load_responses(self, paths, cal_file):
+        """Load version-2 response files that share one parameter basis."""
+        from copy import deepcopy
+
+        from .response import ResponseModel, read_response_files
+
+        library = read_response_files(
+            [str(p) for p in paths], {str(k): v for k, v in self._expected_sha256.items()}
+        )
+        self.library = library
+        self.response_files = library.files
+        self.metadata = {"schema_version": 2, "parameters": library.parameters,
+                         "basis_sha256": library.basis_sha256, "files": library.metadata}
+        self._linear_quantities, self._height_data = None, None
+        self._fl_spl = library.profiles
+        groups = {p["name"]: p["group"] for p in library.parameters}
+        # Files converted from legacy libraries without parameter metadata keep
+        # the name-based calibration binding of those libraries.
+        strict = any(m.get("calibration_binding", "position") == "position"
+                     for m in library.metadata)
+        params = self._make_parameters(
+            library.names, library.covariance, groups, cal_file,
+            basis_sha256=library.basis_sha256, strict=strict,
+        )
+        model = ResponseModel(library.parameters)
+        self.supported_fluxes = []
+        for profile, angles in library.profiles.items():
+            entry = _ResponseEntry(
+                profile, angles, library.derived[profile], model, deepcopy(params),
+                self._debug,
+            )
+            setattr(self, profile, entry)
+            self.supported_fluxes.append(profile)
+
+    def _make_parameters(
+        self, known_pars, cov, groups, cal_file, basis_sha256=None, strict=None
+    ):
+        """Parameter values and covariance, from a calibration if one is given.
+
+        A calibration binds to the parameter vector by name and position. When
+        both the response files and the calibration record a parameter basis,
+        the two must agree.
+        """
+        from .utils import rearrange_covariance
+
+        self.calibration_info = None
         known_parameters = []
         for k in known_pars:
             if k in self.exclude:
@@ -297,13 +396,30 @@ class Flux:
             assert pathlib.Path(cal_file).is_file(), (
                 f"Calibration file {cal_file} not found."
             )
+            expected = self._expected_sha256.get(str(cal_file))
+            if expected is not None:
+                from .metadata import file_sha256
+
+                if file_sha256(cal_file) != expected:
+                    raise ValueError(f"Calibration {cal_file} does not match its sha256")
             with open(str(cal_file), "rb") as f:
                 if self._debug > 2:
                     print("Loading calibration from", cal_file)
                 calibration_d = pickle.load(f, encoding="latin1")
-            validate_calibration_parameters(
-                calibration_d, known_pars, required=self.metadata is not None
-            )
+            strict = self.metadata is not None if strict is None else strict
+            validate_calibration_parameters(calibration_d, known_pars, required=strict)
+            recorded = calibration_d.get("basis_sha256") if isinstance(calibration_d, dict) else None
+            if basis_sha256 is not None and recorded is not None and recorded != basis_sha256:
+                raise ValueError(
+                    "The calibration was fitted in a different parameter basis "
+                    f"({recorded}) than the response files ({basis_sha256})"
+                )
+            self.calibration_info = {
+                k: calibration_d[k]
+                for k in ("calibration_id", "version", "fit_id", "inputs", "basis_sha256",
+                          "spline_sha256", "production_ready")
+                if isinstance(calibration_d, dict) and k in calibration_d
+            }
 
             param_values = []
             for ip, n in enumerate(known_parameters):
@@ -376,31 +492,7 @@ class Flux:
                 else np.diag(params.cov)[indices]
             )
             params.cov[np.ix_(indices, indices)] = np.diag(diagonal)
-
-        # If multiple locations inside the spline file, create a FluxEntry for each
-        self.supported_fluxes = []
-        for exp in self._fl_spl:
-            # Pass per-experiment height data if available
-            exp_height_data = None
-            if self._height_data is not None and exp in self._height_data.get(
-                "fl_spl", {}
-            ):
-                exp_height_data = {
-                    "height_grid_km": self._height_data["height_grid_km"],
-                    "fl_spl": self._height_data["fl_spl"][exp],
-                    "jac_spl": self._height_data["jac_spl"][exp],
-                }
-            subflux = _FluxEntry(
-                exp,
-                self._fl_spl[exp],
-                self._jac_spl[exp],
-                deepcopy(params),
-                self._debug,
-                height_data=exp_height_data,
-                linear_quantities=self._linear_quantities,
-            )
-            setattr(self, exp, subflux)
-            self.supported_fluxes.append(exp)
+        return params
 
     def __repr__(self):
         s = ""
@@ -1071,3 +1163,113 @@ class _FluxEntry(Flux):
         """
         with self._temporary_parameters(params):
             return self._params.chi2
+
+
+class _ResponseEntry(_FluxEntry):
+    """Evaluator for one profile of a version-2 response file.
+
+    Species are tabulated; sums and ratios are formed from them, with
+    uncertainties propagated through the exact gradient of each quantity.
+    """
+
+    def __init__(self, label, angles, derived, model, params, debug) -> None:
+        self.label = label
+        self._tables = angles
+        self._derived = derived
+        self._model = model
+        self._params = params
+        self._debug = debug
+        self._height_data = None
+        self._linear_quantities = None
+        self._fl_spl = angles
+        self._jac_spl = angles
+        self._spl_contains_average = "average" in angles
+        self._zenith_angles = [a for a in angles if a != "average"]
+        self._zenith_deg_arr = np.sort(np.asarray([float(a) for a in self._zenith_angles]))
+        self._zenith_cos_arr = np.cos(np.deg2rad(self._zenith_deg_arr))
+        species = set.intersection(*(set(t) for t in angles.values()))
+        self._species = sorted(species)
+        self._quantities = self._species + [
+            q
+            for q, (num, den) in derived.items()
+            if set(num) | set(den or {}) <= species and q not in species
+        ]
+        self._index = {name: i for i, name in enumerate(model.names)}
+
+    def _terms(self, quantity):
+        if quantity in self._species:
+            return {quantity: 1.0}, None
+        return self._derived[quantity]
+
+    def _check_input(self, energy, quantity) -> None:
+        assert quantity in self._quantities, (
+            f"Quantity must be one of {', '.join(self._quantities)}."
+        )
+        num, den = self._terms(quantity)
+        names = set(num) | set(den or {})
+        lower = max(t[s].domain[0] for t in self._tables.values() for s in names)
+        upper = min(t[s].domain[1] for t in self._tables.values() for s in names)
+        tolerance = 1e-12
+        assert np.max(energy) <= upper * (1 + tolerance) and np.min(energy) >= lower * (
+            1 - tolerance
+        ), f"Energy out of range for {quantity}: {lower:g} - {upper:g} GeV"
+
+    def _theta(self):
+        theta = np.zeros(len(self._model.names))
+        for name, value in self._params:
+            theta[self._index[name]] = value
+        return theta
+
+    def _evaluate(self, energy, zenith_deg, quantity, gradient=False):
+        """Quantity and, optionally, its gradient over all file parameters."""
+        log_e = np.log(np.atleast_1d(np.asarray(energy, dtype=float)))
+        tables = self._tables[zenith_deg]
+        theta = self._theta()
+        num, den = self._terms(quantity)
+
+        def combine(weights):
+            total, grad = 0.0, 0.0
+            for species, w in weights.items():
+                f, g = self._model.evaluate(tables[species], log_e, theta, gradient)
+                total = total + w * f
+                if gradient:
+                    grad = grad + w * g
+            return total, grad
+
+        n, gn = combine(num)
+        if den is None:
+            return n, gn
+        d, gd = combine(den)
+        value = n / d
+        if not gradient:
+            return value, None
+        return value, (gn * d - n * gd) / d**2
+
+    def _flux_from_spl(self, energy, zenith_deg, quantity, params):
+        with self._temporary_parameters(params):
+            value, _ = self._evaluate(energy, zenith_deg, quantity)
+        return np.asarray(value).squeeze()
+
+    def _error_from_spl(self, energy, zenith_deg, quantity, only_hadronic):
+        if self._params.cov is None:
+            raise ValueError(
+                "This library has no prior covariance yet; load a calibration "
+                "to evaluate uncertainties or parameter shifts"
+            )
+        with self._temporary_exclude_parameters("GSF" if only_hadronic else None):
+            _, grad = self._evaluate(energy, zenith_deg, quantity, gradient=True)
+            rows = [self._index[p] for p in self._params.known_parameters]
+            g = grad[rows]
+            error = np.sqrt(np.einsum("pe,pq,qe->e", g, self._params.cov, g))
+        return error.squeeze()
+
+    def gradient(self, energy, zenith_deg, quantity):
+        """d quantity / d parameter at the current values, one row per parameter.
+
+        Rows follow ``params.known_parameters``. ``zenith_deg`` must be a
+        tabulated angle.
+        """
+        angle = zenith_deg if isinstance(zenith_deg, str) else format_angle(zenith_deg)
+        self._check_input(energy, quantity)
+        _, grad = self._evaluate(energy, angle, quantity, gradient=True)
+        return grad[[self._index[p] for p in self._params.known_parameters]]

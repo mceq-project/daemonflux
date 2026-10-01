@@ -37,6 +37,11 @@ The package source lives in `src/daemonflux/`. There are three core classes in `
 - **`_FluxEntry`** — Internal per-location flux evaluator. Evaluates splines, interpolates across zenith angles, applies parameter corrections via Jacobian matrices.
 - **`Parameters`** — Manages model parameters, their covariance/inverse-covariance matrices, and supports iteration. Provides `errors`, `invcov`, and `chi2` properties.
 
+`response.py` reads and writes the HDF5 response files (format version 2) and holds the
+response model (additive and factor parameters, linear or log transform, optional curvature).
+`_ResponseEntry` in `flux.py` evaluates them; `convert.py` converts legacy pickles losslessly.
+See `docs/response-format.md`.
+
 `utils.py` contains helpers for file downloading/caching, angle formatting, covariance matrix operations, and the list of supported flux quantities.
 
 Data files (`src/daemonflux/data/`) are pickled scipy spline objects for different detector locations (generic, Kamioka) and calibration sets (default, with_deis). They are downloaded from GitHub on first use and cached locally.
