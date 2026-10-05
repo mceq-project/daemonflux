@@ -346,6 +346,15 @@ class Flux:
             basis_sha256=library.basis_sha256, strict=strict,
         )
         model = ResponseModel(library.parameters)
+        self._underground_params = deepcopy(params)
+        self._underground_model = None
+        if library.underground:
+            from .response import GROUPS, UNDERGROUND_GROUPS
+
+            self._underground_model = ResponseModel(
+                library.parameters + library.underground_parameters,
+                GROUPS + UNDERGROUND_GROUPS,
+            )
         self.supported_fluxes = []
         for profile, angles in library.profiles.items():
             entry = _ResponseEntry(
@@ -493,6 +502,110 @@ class Flux:
             )
             params.cov[np.ix_(indices, indices)] = np.diag(diagonal)
         return params
+
+    @property
+    def underground_labels(self):
+        """Underground tables of a version-2 library (e.g. totals, depth curves)."""
+        library = getattr(self, "library", None)
+        return sorted(library.underground) if library is not None else []
+
+    @property
+    def underground_parameters(self):
+        """Names of the underground nuisance parameters (e.g. rock densities)."""
+        library = getattr(self, "library", None)
+        return [p["name"] for p in library.underground_parameters] if library else []
+
+    def _underground_evaluate(self, label, quantity, depth, params, gradient):
+        from .response import default_derived
+
+        if getattr(self, "_underground_model", None) is None or (
+            label not in self.library.underground
+        ):
+            raise KeyError(
+                f"Unknown underground table {label}; available: {self.underground_labels}"
+            )
+        tables = self.library.underground[label]
+        if quantity in tables:
+            num, den = {quantity: 1.0}, None
+        else:
+            derived = default_derived(tables)
+            if quantity not in derived:
+                raise KeyError(f"{label}: quantity must be one of {sorted(tables) + sorted(derived)}")
+            num, den = derived[quantity]
+        model = self._underground_model
+        index = {name: i for i, name in enumerate(model.names)}
+        base = self._underground_params
+        theta = np.zeros(len(model.names))
+        for name, value in base:
+            theta[index[name]] = value
+        extra = set(self.underground_parameters)
+        for name, shift in (params or {}).items():
+            if name in extra:
+                theta[index[name]] = shift  # raw value, e.g. a fractional density shift
+            elif name in base.known_parameters:
+                k = base.known_parameters.index(name)
+                theta[index[name]] += base.errors[k] * shift
+            else:
+                raise KeyError(f"Cannot modify {name}, parameter unknown.")
+        first = next(iter(tables.values()))
+        x = first.x if depth is None else np.atleast_1d(np.asarray(depth, dtype=float))
+        if first.x.size > 1:
+            lo, hi = first.domain
+            assert np.min(x) >= lo * (1 - 1e-12) and np.max(x) <= hi * (1 + 1e-12), (
+                f"{label}: depth out of range {lo:g} - {hi:g} km.w.e."
+            )
+        log_x = np.log(x)
+
+        def combine(weights):
+            total, grad = 0.0, 0.0
+            for species, w in weights.items():
+                f, g = model.evaluate(tables[species], log_x, theta, gradient)
+                total = total + w * f
+                if gradient:
+                    grad = grad + w * g
+            return total, grad
+
+        n, gn = combine(num)
+        if den is None:
+            value, grad = n, gn
+        else:
+            d, gd = combine(den)
+            value = n / d
+            grad = (gn * d - n * gd) / d**2 if gradient else None
+        return x, value, grad, index
+
+    def underground(self, label, quantity="muflux", depth=None, params=None):
+        """Underground muon quantity from a version-2 response library.
+
+        Parameters
+        ----------
+        label : str
+            Table name, one of ``underground_labels``: a total flux (one value,
+            in cm^-2 s^-1) or a depth curve (intensity in cm^-2 s^-1 sr^-1
+            against slant depth in km.w.e.).
+        quantity : str
+            "mu+", "mu-", "muflux" (their sum) or "muratio".
+        depth : float or array, optional
+            Slant depths in km.w.e. for depth curves; default the tabulated grid.
+        params : dict, optional
+            Shifts of the file parameters in units of their errors (as for
+            ``flux``), and underground parameters (``underground_parameters``,
+            e.g. "WIPP_density") as raw values.
+
+        Returns
+        -------
+        float or np.ndarray
+        """
+        _, value, _, _ = self._underground_evaluate(label, quantity, depth, params, False)
+        value = np.asarray(value)
+        return float(value[0]) if value.size == 1 and depth is None else value
+
+    def underground_gradient(self, label, quantity="muflux", depth=None, params=None):
+        """d quantity / d parameter: rows ``params.known_parameters`` (per unit
+        parameter value) followed by ``underground_parameters``."""
+        _, _, grad, index = self._underground_evaluate(label, quantity, depth, params, True)
+        names = list(self._underground_params.known_parameters) + self.underground_parameters
+        return grad[[index[n] for n in names]]
 
     def __repr__(self):
         s = ""

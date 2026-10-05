@@ -288,3 +288,95 @@ def test_legacy_conversion_is_lossless(tmp_path):
                 old.error(E, angle, q, exp=exp),
                 rtol=1e-12,
             )
+
+
+UG_PARAMS = [{"name": "WIPP_density", "group": "underground", "units": "fractional"}]
+
+
+def _underground(rng):
+    depth = np.linspace(0.5, 14.0, 28)
+    n_rows = len(PARAMS) + len(UG_PARAMS)
+    curve = {
+        s: {
+            "x": depth,
+            "value": 1e-6 * np.exp(-depth / (2.0 + 0.1 * k)),
+            "jacobian": rng.uniform(-0.3, 0.3, (n_rows, depth.size)),
+        }
+        for k, s in enumerate(("mu+", "mu-"))
+    }
+    total = {
+        s: {
+            "x": [1.507],
+            "value": [2.4e-7 + 0.1e-7 * k],
+            "jacobian": rng.uniform(-0.3, 0.3, (n_rows, 1)),
+            "curvature": rng.uniform(-0.1, 0.1, (n_rows, 1)),
+        }
+        for k, s in enumerate(("mu+", "mu-"))
+    }
+    return {"depth-ug-LNGS": curve, "total-ug-wipp": total}
+
+
+def test_underground_tables_roundtrip_and_evaluate(tmp_path):
+    rng = np.random.default_rng(7)
+    tables = _underground(rng)
+    path = tmp_path / "ug.h5"
+    write_response_file(
+        path,
+        {"parameters": PARAMS, "underground_parameters": UG_PARAMS},
+        _profiles(),
+        covariance=0.01 * np.eye(len(PARAMS)),
+        underground=tables,
+        underground_metadata={"total-ug-wipp": {"kind": "total", "lab": "WIPP"}},
+    )
+    lib = read_response_files([path])
+    assert lib.underground_metadata["total-ug-wipp"]["lab"] == "WIPP"
+    assert [p["name"] for p in lib.underground_parameters] == ["WIPP_density"]
+    # Underground parameters are nuisances, not part of the calibration basis.
+    assert lib.basis_sha256 == basis_sha256(normalize(PARAMS))
+    flux = Flux(spl_file=[str(path)], use_calibration=False, debug=0)
+    assert flux.underground_labels == ["depth-ug-LNGS", "total-ug-wipp"]
+    total = tables["total-ug-wipp"]
+    npt.assert_allclose(
+        flux.underground("total-ug-wipp"), total["mu+"]["value"][0] + total["mu-"]["value"][0]
+    )
+    # Raw density shift: F = F0 (1 + J d + c d^2 / 2) for an additive linear parameter.
+    d = 0.05
+    expect = sum(
+        t["value"][0] * (1 + t["jacobian"][-1, 0] * d + 0.5 * t["curvature"][-1, 0] * d**2)
+        for t in total.values()
+    )
+    npt.assert_allclose(flux.underground("total-ug-wipp", params={"WIPP_density": d}), expect)
+    curve = tables["depth-ug-LNGS"]
+    npt.assert_allclose(
+        flux.underground("depth-ug-LNGS", "muratio"), curve["mu+"]["value"] / curve["mu-"]["value"]
+    )
+    # Depth curves interpolate log-log between the tabulated depths.
+    mid = flux.underground("depth-ug-LNGS", "mu+", depth=[np.sqrt(0.5)])
+    npt.assert_allclose(mid, np.sqrt(curve["mu+"]["value"][0] * curve["mu+"]["value"][1]))
+    grad = flux.underground_gradient("total-ug-wipp")
+    assert grad.shape == (len(PARAMS) + 1, 1)
+    npt.assert_allclose(
+        grad[-1, 0], sum(t["value"][0] * t["jacobian"][-1, 0] for t in total.values())
+    )
+    with pytest.raises(KeyError, match="parameter unknown"):
+        flux.underground("total-ug-wipp", params={"nope": 1.0})
+
+
+def normalize(params):
+    from daemonflux.response import normalize_parameters
+
+    return normalize_parameters(params)
+
+
+def test_underground_rows_and_labels_are_checked(tmp_path):
+    rng = np.random.default_rng(3)
+    tables = _underground(rng)
+    with pytest.raises(ValueError, match="rows"):
+        write_response_file(
+            tmp_path / "bad.h5", {"parameters": PARAMS}, _profiles(), underground=tables
+        )
+    meta = {"parameters": PARAMS, "underground_parameters": UG_PARAMS}
+    with pytest.raises(ValueError, match="must not contain"):
+        write_response_file(
+            tmp_path / "bad.h5", meta, _profiles(), underground={"a/b": tables["total-ug-wipp"]}
+        )
