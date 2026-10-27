@@ -380,3 +380,95 @@ def test_underground_rows_and_labels_are_checked(tmp_path):
         write_response_file(
             tmp_path / "bad.h5", meta, _profiles(), underground={"a/b": tables["total-ug-wipp"]}
         )
+
+
+def _helicity(rng, x, n_rows, curvature=False):
+    out = {}
+    for c in ("mu+", "mu-"):
+        for h in ("_l", "_r", "_0"):
+            out[c + h] = {
+                "x": x,
+                "value": rng.uniform(0.5, 2.0, len(x)) * 1e-3,
+                "jacobian": rng.uniform(-0.3, 0.3, (n_rows, len(x))),
+            }
+            if curvature:
+                out[c + h]["curvature"] = rng.uniform(-0.1, 0.1, (n_rows, len(x)))
+    return out
+
+
+def test_helicity_and_underground_derived(tmp_path):
+    rng = np.random.default_rng(11)
+    n_rows = len(PARAMS) + len(UG_PARAMS)
+    stopping = _helicity(rng, [1.0], n_rows, curvature=True)
+    r_plus, r_minus = 0.718, 0.051
+    meta_stop = {
+        "kind": "stopping",
+        "derived": [
+            {
+                "name": "R",
+                "numerator": {"mu+_l": 1.0, "mu+_r": 1.0, "mu+_0": 1.0},
+                "denominator": {"mu-_l": 1.0, "mu-_r": 1.0, "mu-_0": 1.0},
+            },
+            {
+                "name": "P0_eff",
+                "numerator": {
+                    "mu+_l": r_plus,
+                    "mu+_r": -r_plus,
+                    "mu-_r": r_minus,
+                    "mu-_l": -r_minus,
+                },
+                "denominator": {
+                    **{f"mu+{h}": r_plus for h in ("_l", "_r", "_0")},
+                    **{f"mu-{h}": r_minus for h in ("_l", "_r", "_0")},
+                },
+                "constants": {"r+": r_plus, "r-": r_minus},
+            },
+        ],
+    }
+    profiles = _profiles()
+    x = profiles["site"]["0.0000"]["mu+"]["x"]
+    for angle, tables in profiles["site"].items():
+        tables.update(_helicity(rng, x, len(PARAMS)))
+    path = tmp_path / "hel.h5"
+    write_response_file(
+        path,
+        {"parameters": PARAMS, "underground_parameters": UG_PARAMS},
+        profiles,
+        covariance=0.01 * np.eye(len(PARAMS)),
+        underground={"stopping-ug-superk": stopping},
+        underground_metadata={"stopping-ug-superk": meta_stop},
+    )
+    flux = Flux(spl_file=[str(path)], use_calibration=False, debug=0)
+    n = {k: v["value"][0] for k, v in stopping.items()}
+    plus = n["mu+_l"] + n["mu+_r"] + n["mu+_0"]
+    minus = n["mu-_l"] + n["mu-_r"] + n["mu-_0"]
+    npt.assert_allclose(flux.underground("stopping-ug-superk", "R"), plus / minus)
+    npt.assert_allclose(flux.underground("stopping-ug-superk", "muratio"), plus / minus)
+    npt.assert_allclose(flux.underground("stopping-ug-superk", "muflux"), plus + minus)
+    npt.assert_allclose(flux.underground("stopping-ug-superk", "mu+"), plus)
+    npt.assert_allclose(
+        flux.underground("stopping-ug-superk", "mu+_polarization"),
+        (n["mu+_r"] - n["mu+_l"]) / plus,
+    )
+    p0 = (r_plus * (n["mu+_l"] - n["mu+_r"]) + r_minus * (n["mu-_r"] - n["mu-_l"])) / (
+        r_plus * plus + r_minus * minus
+    )
+    npt.assert_allclose(flux.underground("stopping-ug-superk", "P0_eff"), p0)
+    # Gradient of a metadata quantity by finite difference in a raw parameter.
+    grad = flux.underground_gradient("stopping-ug-superk", "P0_eff")
+    h = 1e-6
+    up = flux.underground("stopping-ug-superk", "P0_eff", params={"WIPP_density": h})
+    down = flux.underground("stopping-ug-superk", "P0_eff", params={"WIPP_density": -h})
+    npt.assert_allclose(grad[-1, 0], (up - down) / (2 * h), rtol=1e-5)
+    # Surface profiles: stored totals stay, helicity polarization is derived.
+    tab = profiles["site"]["0.0000"]
+    pol = (tab["mu-_r"]["value"] - tab["mu-_l"]["value"]) / sum(
+        tab["mu-" + h]["value"] for h in ("_l", "_r", "_0")
+    )
+    npt.assert_allclose(flux.flux(x, "0.0000", "mu-_polarization", exp="site"), pol)
+    npt.assert_allclose(
+        flux.flux(x, "0.0000", "muratio", exp="site"),
+        tab["mu+"]["value"] / tab["mu-"]["value"],
+    )
+    with pytest.raises(KeyError, match="quantity must be one of"):
+        flux.underground("stopping-ug-superk", "numuflux")

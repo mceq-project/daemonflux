@@ -61,6 +61,8 @@ UNITS = ("fractional", "sigma")
 COMBINATIONS = ("additive", "factor")
 TRANSFORMS = ("linear", "log")
 SPECIES = ("mu+", "mu-", "numu", "antinumu", "nue", "antinue")
+# Muon helicity components (MCEq): -1 ("_l"), +1 ("_r") and 0 ("_0"), at production.
+HELICITIES = ("_l", "_r", "_0")
 PREFIXES = ("", "pr_", "total_")
 HDF5_SIGNATURE = b"\x89HDF\r\n\x1a\n"
 
@@ -135,6 +137,35 @@ def default_derived(species):
                 {nu[0]: 1.0, nu[1]: 1.0},
                 {nu[2]: 1.0, nu[3]: 1.0},
             )
+    for q, terms in helicity_derived(species).items():
+        derived.setdefault(q, terms)
+    return derived
+
+
+def helicity_derived(species):
+    """Quantities formed from muon helicity components ``mu+_l``, ``mu+_r``, ``mu+_0``.
+
+    For each charge with all three components: the helicity sum (when the sum
+    itself is not stored) and the polarization ``<charge>_polarization`` =
+    (N_r - N_l) / N. With both charges, ``muflux`` and ``muratio`` of the sums.
+    """
+    species = set(species)
+    derived, sums = {}, {}
+    for p in PREFIXES:
+        for charge in ("mu+", "mu-"):
+            c = p + charge
+            parts = [c + h for h in HELICITIES]
+            if not set(parts) <= species:
+                continue
+            total = {k: 1.0 for k in parts}
+            sums[c] = total
+            if c not in species:
+                derived[c] = (total, None)
+            derived[f"{c}_polarization"] = ({c + "_r": 1.0, c + "_l": -1.0}, total)
+        plus, minus = sums.pop(p + "mu+", None), sums.pop(p + "mu-", None)
+        if plus and minus:
+            derived[f"{p}muflux"] = (plus | minus, None)
+            derived[f"{p}muratio"] = (plus, minus)
     return derived
 
 
@@ -263,6 +294,7 @@ class ResponseLibrary:
         self.underground_parameters = []
         self.underground = {}
         self.underground_metadata = {}
+        self.underground_derived = {}
         self.files = []
 
     @property
@@ -367,6 +399,11 @@ class ResponseLibrary:
                 if tables[species].n_params != rows:
                     raise ValueError(f"underground/{label}/{species}: wrong jacobian rows")
             self.underground[label] = tables
+            derived = default_derived(tables)
+            derived.update(
+                _parse_derived(self.underground_metadata[label].get("derived"), tables)
+            )
+            self.underground_derived[label] = derived
 
 
 def read_response_files(paths, expected=None):
