@@ -516,8 +516,6 @@ class Flux:
         return [p["name"] for p in library.underground_parameters] if library else []
 
     def _underground_evaluate(self, label, quantity, depth, params, gradient):
-        from .response import default_derived
-
         if getattr(self, "_underground_model", None) is None or (
             label not in self.library.underground
         ):
@@ -528,7 +526,7 @@ class Flux:
         if quantity in tables:
             num, den = {quantity: 1.0}, None
         else:
-            derived = default_derived(tables)
+            derived = self.library.underground_derived[label]
             if quantity not in derived:
                 raise KeyError(f"{label}: quantity must be one of {sorted(tables) + sorted(derived)}")
             num, den = derived[quantity]
@@ -584,7 +582,10 @@ class Flux:
             in cm^-2 s^-1) or a depth curve (intensity in cm^-2 s^-1 sr^-1
             against slant depth in km.w.e.).
         quantity : str
-            "mu+", "mu-", "muflux" (their sum) or "muratio".
+            A stored species ("mu+", "mu-" or helicity components such as
+            "mu+_l"), "muflux" (their sum), "muratio", "mu+_polarization", or
+            a quantity defined in the table metadata (e.g. "R", "P0_eff" of a
+            stopping-muon table).
         depth : float or array, optional
             Slant depths in km.w.e. for depth curves; default the tabulated grid.
         params : dict, optional

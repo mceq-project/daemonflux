@@ -59,6 +59,46 @@ metadata:
 A file may also store a quantity whose species are absent (e.g. `muflux` only).
 Such a table is evaluated with the same response model as a species.
 
+Muons may also be stored by helicity at production (MCEq): `mu+_l`, `mu+_r` and
+`mu+_0` for helicity −1, +1 and 0, the same for `mu-`, with any prefix. When
+all three components of a charge are present, the evaluator also forms their
+sum (`mu+`, unless it is stored), the polarization
+`mu+_polarization` = (N_r − N_l) / N, and, with both charges, `muflux` and
+`muratio` of the sums.
+
+## Underground tables
+
+```
+/underground/<label>    attr "metadata": JSON text (kind, site, units, derived)
+/underground/<label>/<species>/
+    x, value, jacobian, curvature   as for profiles; x is slant depth in
+                                    km.w.e., or one entry for a total
+```
+
+The jacobian rows are the file parameters followed by the
+`underground_parameters` of the file metadata (e.g. rock densities), which are
+experiment nuisances outside the parameter basis. `Flux.underground(label,
+quantity)` evaluates a table and `Flux.underground_gradient(label, quantity)`
+its gradient. Quantities are the stored species, the sums, ratios and helicity
+quantities above, and the `derived` entries of the table metadata, in the form
+shown above. For example, a stopping-muon table stored by helicity declares
+the charge ratio `R` and the effective polarization `P0_eff` of Super-K's
+stopping muons (decay-electron efficiencies as weights):
+
+```json
+"derived": [{"name": "R",
+             "numerator": {"mu+_l": 1, "mu+_r": 1, "mu+_0": 1},
+             "denominator": {"mu-_l": 1, "mu-_r": 1, "mu-_0": 1}},
+            {"name": "P0_eff",
+             "numerator": {"mu+_l": 0.718, "mu+_r": -0.718,
+                           "mu-_r": 0.051, "mu-_l": -0.051},
+             "denominator": {"mu+_l": 0.718, "mu+_r": 0.718, "mu+_0": 0.718,
+                             "mu-_l": 0.051, "mu-_r": 0.051, "mu-_0": 0.051}}]
+```
+
+Entries may carry further keys (`formula`, `constants`); they are kept in
+`Flux.library.underground_metadata` and not used by the evaluator.
+
 ## Metadata
 
 ```json
