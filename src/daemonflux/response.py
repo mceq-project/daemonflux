@@ -26,11 +26,19 @@ Layout (HDF5)::
         jacobian    (n_params + n_underground, n): file parameters, then the
                     underground parameters listed in metadata
         curvature   optional, same shape
+    /sky/<site>             optional; attr "metadata": JSON text describing a
+                            sky map of the site (see ``check_sky``)
 
 Underground tables fold the surface responses through muon transport in rock
 (e.g. MUTE). Their extra parameters (rock densities) are experiment nuisances:
 they are listed under ``underground_parameters`` and are not part of the
 parameter basis, so calibrations bind as before.
+
+A sky map describes one site by direction: one profile per azimuth bin, each
+tabulated at the zenith-bin centres (values are bin averages), and optionally
+a direction-independent profile (e.g. a 1D cascade calculation) that takes
+over above an energy window, where geomagnetic and 3D effects vanish. The
+profiles may be stored in other files of the same basis.
 
 Response model, for parameter values theta and multipliers a = g(theta)
 (``transform`` "linear": a = theta; "log": a = exp(theta) - 1)::
@@ -294,6 +302,7 @@ class ResponseLibrary:
         self.underground_parameters = []
         self.underground = {}
         self.underground_metadata = {}
+        self.sky = {}
         self.underground_derived = {}
         self.files = []
 
@@ -366,6 +375,10 @@ class ResponseLibrary:
                 derived.update(_parse_derived(meta.get("derived"), species))
                 self.derived[profile] = derived
             self._add_underground(h5, meta, path.name, interpolation)
+            for site, group in h5.get("sky", {}).items():
+                if site in self.sky:
+                    raise ValueError(f"Sky site {site} appears in more than one file")
+                self.sky[site] = check_sky(site, json.loads(group.attrs["metadata"]))
         meta["file"] = path.name
         meta["sha256"] = sha
         self.metadata.append(meta)
@@ -406,6 +419,50 @@ class ResponseLibrary:
             self.underground_derived[label] = derived
 
 
+def check_sky(site, description):
+    """Validate a sky-map description and return it with lists for arrays.
+
+    Keys:
+
+    ``profiles``
+        One profile name per azimuth bin, in the order of ``azimuth_edges_deg``.
+        Each is tabulated at the zenith angles of the bin centres of
+        ``cos_zenith_edges``; its values are averages over the bin.
+    ``azimuth_edges_deg``
+        Increasing bin edges spanning 360 degrees.
+    ``azimuth_convention``
+        Text, e.g. "arrival direction, 0 South, 90 East" (Honda).
+    ``cos_zenith_edges``
+        Increasing bin edges in cos(zenith) within [-1, 1].
+    ``high_energy`` (optional)
+        ``{"profile": name, "blend_GeV": [lower, upper]}``: a profile without
+        azimuth dependence that replaces the map above ``upper``. In between the
+        two are blended with a weight rising smoothly in log(E) from 0 to 1.
+    """
+    d = dict(description)
+    missing = {"profiles", "azimuth_edges_deg", "cos_zenith_edges"} - set(d)
+    if missing:
+        raise ValueError(f"Sky {site}: missing {sorted(missing)}")
+    az = np.asarray(d["azimuth_edges_deg"], dtype=float)
+    cz = np.asarray(d["cos_zenith_edges"], dtype=float)
+    if az.ndim != 1 or az.size < 2 or np.any(np.diff(az) <= 0):
+        raise ValueError(f"Sky {site}: azimuth edges must increase")
+    if not np.isclose(az[-1] - az[0], 360.0):
+        raise ValueError(f"Sky {site}: azimuth edges must span 360 degrees")
+    if cz.ndim != 1 or cz.size < 2 or np.any(np.diff(cz) <= 0) or cz[0] < -1 or cz[-1] > 1:
+        raise ValueError(f"Sky {site}: cos(zenith) edges must increase within [-1, 1]")
+    if len(d["profiles"]) != az.size - 1:
+        raise ValueError(f"Sky {site}: one profile per azimuth bin is required")
+    he = d.get("high_energy")
+    if he is not None:
+        lower, upper = map(float, he.get("blend_GeV", (np.nan, np.nan)))
+        if "profile" not in he or not 0 < lower < upper:
+            raise ValueError(f"Sky {site}: high_energy needs a profile and 0 < lower < upper")
+    d["profiles"] = list(d["profiles"])
+    d["azimuth_edges_deg"], d["cos_zenith_edges"] = az.tolist(), cz.tolist()
+    return d
+
+
 def read_response_files(paths, expected=None):
     """Load response files into one library. ``expected`` maps path -> sha256."""
     library = ResponseLibrary()
@@ -431,6 +488,7 @@ def write_response_file(
     profile_metadata=None,
     underground=None,
     underground_metadata=None,
+    sky=None,
 ):
     """Write a version-2 response file atomically and return its sha256.
 
@@ -442,6 +500,9 @@ def write_response_file(
     ``underground[label][species]`` holds underground tables whose jacobians
     have one row per file parameter followed by one per entry of
     ``metadata["underground_parameters"]``.
+
+    ``sky[site]`` describes a sky map (see ``check_sky``); its profiles may be
+    in this file or in another file of the same basis.
     """
     import h5py
 
@@ -524,6 +585,15 @@ def write_response_file(
                     d.create_dataset("jacobian", data=checked.jacobian)
                     if checked.curvature is not None:
                         d.create_dataset("curvature", data=checked.curvature)
+            if sky:
+                root = h5.create_group("sky")
+            for site, description in (sky or {}).items():
+                if "/" in site:
+                    raise ValueError(f"Sky site {site} must not contain '/'")
+                group = root.create_group(site)
+                group.attrs["metadata"] = json.dumps(
+                    check_sky(site, description), default=_json_default
+                )
         umask = os.umask(0)
         os.umask(umask)
         os.chmod(tmp, 0o666 & ~umask)
