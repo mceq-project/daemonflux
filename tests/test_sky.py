@@ -1,12 +1,11 @@
 import numpy as np
 import numpy.testing as npt
 import pytest
+from test_response import PARAMS, _calibration
 
 from daemonflux import Flux
 from daemonflux.response import write_response_file
 from daemonflux.utils import format_angle
-
-from test_response import PARAMS, _calibration
 
 AZ_EDGES = [0.0, 90.0, 180.0, 270.0, 360.0]
 COS_EDGES = [-1.0, -0.5, 0.0, 0.5, 1.0]
@@ -56,55 +55,144 @@ def _sky_files(tmp_path, high_energy=True, seed=3):
     return Flux(spl_file=files, cal_file=cal, debug=0), names
 
 
+def _bin_mean(flux_fn, c_lo, c_hi, az_lo, az_hi, nodes=3):
+    """Average of flux_fn(zenith_deg, azimuth_deg) over a bin, Gauss-Legendre in
+    cos(zenith) and azimuth (exact for the piecewise-quadratic reconstruction)."""
+    t, w = np.polynomial.legendre.leggauss(nodes)
+    c = 0.5 * (c_lo + c_hi) + 0.5 * (c_hi - c_lo) * t
+    az = 0.5 * (az_lo + az_hi) + 0.5 * (az_hi - az_lo) * t
+    zen = np.degrees(np.arccos(c))
+    values = flux_fn(zen[None, :], az[:, None])  # (n_E, n_az, n_zen)
+    return np.einsum("eaz,a,z->e", values, w / 2, w / 2)
+
+
 def test_bins_reproduce_tables(tmp_path):
     flux, names = _sky_files(tmp_path)
     assert flux.sky_sites == ["site"]
     sky = flux["site"]
     E = np.geomspace(0.1, 9.9, 7)
     for k, name in enumerate(names):
-        az = 45.0 + 90.0 * k
-        for angle in CENTRES:
+        for i, angle in enumerate(CENTRES):
             ref = flux.flux(E, angle, "numu", exp=name)
-            for binned in (True, False):
+            # anywhere inside the bin, binned returns the bin average
+            for dz, da in ((0.0, 0.0), (1.0, 30.0)):
                 npt.assert_allclose(
-                    sky.flux(E, float(angle), "numu", azimuth_deg=az, binned=binned),
+                    sky.flux(
+                        E,
+                        float(angle) + dz,
+                        "numu",
+                        azimuth_deg=45.0 + 90.0 * k + da,
+                        binned=True,
+                    ),
                     ref,
                     rtol=1e-13,
                 )
-            # anywhere inside the bin, binned returns the bin average
-            npt.assert_allclose(
-                sky.flux(
-                    E, float(angle) + 1.0, "numu", azimuth_deg=az + 30.0, binned=True
-                ),
-                ref,
-                rtol=1e-13,
+            # the reconstruction in the bin averages to the table
+            mean = _bin_mean(
+                lambda z, a: sky.flux(E, z, "numu", azimuth_deg=a),
+                COS_EDGES[i],
+                COS_EDGES[i + 1],
+                AZ_EDGES[k],
+                AZ_EDGES[k + 1],
             )
+            npt.assert_allclose(mean, ref, rtol=1e-12)
 
 
-def test_azimuth_interpolation_and_average(tmp_path):
+def test_reconstruction_is_exact_for_quadratics(tmp_path):
+    """Bin averages of a flux quadratic in cos(zenith) in each hemisphere (with a
+    cusp at the horizon) and constant in azimuth give back the flux (from three
+    bins per hemisphere on)."""
+    edges = np.linspace(-1.0, 1.0, 9)
+    centres = [
+        format_angle(np.degrees(np.arccos(c))) for c in 0.5 * (edges[1:] + edges[:-1])
+    ]
+    shape = {-1: (1.0, 0.5, 2.0), 1: (1.0, -0.3, 1.5)}  # 1 + b c + a c^2 per side
+
+    def g(c):
+        a0, b, a = shape[1 if c >= 0 else -1]
+        return a0 + b * c + a * c**2
+
+    def g_mean(lo, hi):
+        a0, b, a = shape[1 if lo >= 0 else -1]
+        cube = (hi**3 - lo**3) / 3
+        return a0 + (b * (hi**2 - lo**2) / 2 + a * cube) / (hi - lo)
+
+    x = np.geomspace(0.1, 100.0, 13)
+    jac = np.random.default_rng(1).uniform(-0.4, 0.4, (len(PARAMS), x.size))
+    base = 1e-2 * x**0.1
+    names = [f"site_az{k:02d}" for k in range(len(AZ_EDGES) - 1)]
+    maps = {
+        n: {
+            a: {"numu": {"x": x, "value": base * g_mean(lo, hi), "jacobian": jac}}
+            for a, lo, hi in zip(centres, edges[:-1], edges[1:])
+        }
+        for n in names
+    }
+    sky = {
+        "site": {
+            "profiles": names,
+            "azimuth_edges_deg": AZ_EDGES,
+            "cos_zenith_edges": edges,
+        }
+    }
+    write_response_file(
+        tmp_path / "q.h5", {"parameters": PARAMS}, maps, covariance=COV, sky=sky
+    )
+    site = Flux(spl_file=[tmp_path / "q.h5"], use_calibration=False, debug=0)["site"]
+    E = np.array([0.3, 30.0])
+    unit = site.flux(E, 170.0, "numu", binned=True) / g_mean(edges[0], edges[1])
+    for c in (-1.0, -0.8, -0.31, -0.02, 0.0, 0.07, 0.5, 0.93, 1.0):
+        expect = unit * g(c)  # at the horizon both one-sided values are 1
+        npt.assert_allclose(
+            site.flux(E, np.degrees(np.arccos(c)), "numu", azimuth_deg=[17.0, 250.0]),
+            np.stack([expect, expect], axis=1),
+            rtol=1e-12,
+        )
+
+
+def test_azimuth_reconstruction_and_average(tmp_path):
     flux, names = _sky_files(tmp_path)
     sky, E, zen = flux["site"], np.geomspace(0.2, 5.0, 4), float(CENTRES[2])
-    f = [flux.flux(E, CENTRES[2], "antinumu", exp=n) for n in names]
-    npt.assert_allclose(sky.flux(E, zen, "antinumu", azimuth_deg=90.0), (f[0] + f[1]) / 2)
-    # periodic: between the last and the first bin centre
-    npt.assert_allclose(sky.flux(E, zen, "antinumu", azimuth_deg=0.0), (f[3] + f[0]) / 2)
+    f = [
+        sky.flux(E, zen, "antinumu", azimuth_deg=45.0 + 90.0 * k, binned=True)
+        for k in range(len(names))
+    ]
+    # periodic
     npt.assert_allclose(
         sky.flux(E, zen, "antinumu", azimuth_deg=-30.0),
         sky.flux(E, zen, "antinumu", azimuth_deg=330.0),
         rtol=1e-14,
     )
-    npt.assert_allclose(sky.flux(E, zen, "antinumu"), np.mean(f, axis=0), rtol=1e-13)
     npt.assert_allclose(
-        flux.flux(E, zen, "antinumu", exp="site", azimuth_deg=90.0), (f[0] + f[1]) / 2
+        sky.flux(E, zen, "antinumu", azimuth_deg=0.0),
+        sky.flux(E, zen, "antinumu", azimuth_deg=360.0),
+        rtol=1e-14,
+    )
+    # the average over azimuth is the width-weighted mean of the bins
+    npt.assert_allclose(
+        sky.flux(E, zen, "antinumu", binned=True), np.mean(f, axis=0), rtol=1e-13
+    )
+    az = np.linspace(0.0, 360.0, 721)[:-1]
+    npt.assert_allclose(
+        sky.flux(E, zen, "antinumu", azimuth_deg=az).mean(axis=1),
+        sky.flux(E, zen, "antinumu"),
+        rtol=1e-12,
+    )
+    npt.assert_allclose(
+        flux.flux(E, zen, "antinumu", exp="site", azimuth_deg=90.0),
+        sky.flux(E, zen, "antinumu", azimuth_deg=90.0),
     )
     # broadcasting of directions: energy first, then the direction shape
-    out = sky.flux(E, [zen, zen], "antinumu", azimuth_deg=[[45.0], [135.0], [225.0]])
+    out = sky.flux(E, [zen, 40.0], "antinumu", azimuth_deg=[[45.0], [135.0], [225.0]])
     assert out.shape == (E.size, 3, 2)
-    npt.assert_allclose(out[:, 1, 0], f[1])
+    npt.assert_allclose(out[:, 1, 1], sky.flux(E, 40.0, "antinumu", azimuth_deg=135.0))
 
 
 def test_high_energy_join(tmp_path):
-    flux, names = _sky_files(tmp_path)
+    (tmp_path / "joined").mkdir()
+    (tmp_path / "map").mkdir()
+    flux, _ = _sky_files(tmp_path / "joined")
+    map_only = _sky_files(tmp_path / "map", high_energy=False)[0]["site"]
     sky = flux["site"]
     lower, upper = sky.energy_range("numu")
     assert (lower, upper) == (0.1, 1e6)
@@ -112,13 +200,13 @@ def test_high_energy_join(tmp_path):
     one_d = flux["site_1d"]
     above = np.geomspace(50.0, 1e6, 6)
     npt.assert_allclose(
-        sky.flux(above, zen, "numu", azimuth_deg=az),
-        one_d.flux(above, CENTRES[3], "numu"),
+        sky.flux(above, [zen, 50.0], "numu", azimuth_deg=az),
+        np.stack([one_d.flux(above, z, "numu") for z in (CENTRES[3], "50")], axis=1),
         rtol=1e-13,
     )
     mid = np.sqrt(BLEND[0] * BLEND[1])
     expect = 0.5 * (
-        flux.flux(mid, CENTRES[3], "numu", exp=names[1])
+        map_only.flux(mid, zen, "numu", azimuth_deg=az)
         + one_d.flux(mid, CENTRES[3], "numu")
     )
     npt.assert_allclose(sky.flux(mid, zen, "numu", azimuth_deg=az), expect, rtol=1e-13)
@@ -129,10 +217,21 @@ def test_high_energy_join(tmp_path):
         np.sqrt(np.einsum("pe,pq,qe->e", g, sky.covariance, g)),
         rtol=1e-12,
     )
-    gm = flux[names[1]].gradient(mid, CENTRES[3], "numu")
+    gm = map_only.gradient(mid, zen, "numu", azimuth_deg=az)
     gh = one_d.gradient(mid, CENTRES[3], "numu")
     npt.assert_allclose(
         sky.gradient(mid, zen, "numu", azimuth_deg=az), 0.5 * (gm + gh), rtol=1e-12
+    )
+    # binned: the bin average of the high-energy profile's linear interpolant
+    lo, hi = COS_EDGES[2], COS_EDGES[3]
+    c = np.linspace(lo, hi, 2001)
+    values = np.stack(
+        [one_d.flux(above, z, "numu") for z in np.degrees(np.arccos(c))], axis=1
+    )
+    npt.assert_allclose(
+        sky.flux(above, float(CENTRES[2]), "numu", binned=True),
+        0.5 * (values[:, 1:] + values[:, :-1]) @ np.diff(c) / (hi - lo),
+        rtol=1e-6,
     )
     npt.assert_allclose(sky.covariance, COV)
     assert sky.parameter_names == [p["name"] for p in PARAMS]

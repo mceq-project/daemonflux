@@ -1,20 +1,27 @@
-"""Sky maps: fluxes by zenith and azimuth, joined to a 1D table at high energy.
+"""Sky maps: fluxes by zenith and azimuth, joined to a 1D profile at high energy.
 
 A sky map (``/sky/<site>`` in a response file, see ``response.check_sky``)
 groups one profile per azimuth bin, each tabulated at the zenith-bin centres
-with bin-averaged values. Above an energy window the map hands over to a
-profile without azimuth dependence, typically an ordinary 1D cascade
-calculation for the same site, where geomagnetic and 3D effects have vanished.
-Only the tables are stored; the join happens here, at evaluation time.
+with bin-averaged values. Above an energy window the map hands over to an
+ordinary profile of point values without azimuth dependence, typically the 1D
+cascade calculation for the same site, where geomagnetic and 3D effects have
+vanished. Only the tables are stored; the join happens here.
 
-Directions are interpolated linearly in the flux: in cos(zenith) between the
-bin centres (constant beyond the outermost centres) and periodically in
-azimuth between the bin centres. ``binned=True`` returns the bin average of the
-bin containing the direction instead. Every value is a weighted sum of table
-entries, so gradients, errors and ratios between directions stay exact.
+The flux in a direction is reconstructed from the bin averages by a
+histospline: the derivative of the cubic spline through the cumulative bin
+integrals, which reproduces every bin average and, from three bins per side
+on, is exact for fluxes quadratic in cos(zenith). In cos(zenith) the spline is
+"not-a-knot" and split at the horizon, where the flux has a cusp; in azimuth it
+is periodic. ``binned=True`` returns the bin average instead. The high-energy
+profile is interpolated linearly in cos(zenith), as any other profile. Every
+value is a weighted sum of table entries, so gradients, errors and ratios
+between directions are exact.
 """
 
+from itertools import pairwise
+
 import numpy as np
+from scipy.interpolate import CubicSpline
 
 from .flux import _ResponseEntry
 from .response import default_derived
@@ -27,15 +34,65 @@ def _smoothstep(log_e, lower, upper):
     return t * t * (3.0 - 2.0 * t)
 
 
+def _histospline(edges, periodic=False):
+    """Point values from bin averages: x -> weights (len(x), n_bins).
+
+    The weights are the derivative of the cubic spline through the cumulative
+    integrals at ``edges``, one spline per unit vector of bin averages.
+    Outside the edges the value at the nearest edge is kept.
+    """
+    width = np.diff(edges)
+    if width.size == 1:
+        return lambda x: np.ones((np.size(x), 1))
+    cumulative = np.vstack([np.zeros(width.size), np.cumsum(np.diag(width), axis=0)])
+    if not periodic:
+        slope = CubicSpline(edges, cumulative).derivative()
+        return lambda x: slope(np.clip(x, edges[0], edges[-1]))
+    period = edges[-1] - edges[0]
+    mean = width / period
+    cumulative -= np.outer(edges - edges[0], mean)
+    cumulative[-1] = cumulative[0]
+    slope = CubicSpline(edges, cumulative, bc_type="periodic").derivative()
+    return lambda x: slope((x - edges[0]) % period + edges[0]) + mean
+
+
+def _zenith_histospline(edges):
+    """``_histospline`` in cos(zenith), split at the horizon if it is an edge.
+
+    At cos(zenith) = 0 the two one-sided values are averaged.
+    """
+    split = np.flatnonzero(np.isclose(edges, 0.0, atol=1e-12))
+    if split.size == 0 or split[0] in (0, edges.size - 1):
+        return _histospline(edges)
+    j = int(split[0])
+    lower, upper = _histospline(edges[: j + 1]), _histospline(edges[j:])
+
+    def weights(c):
+        c = np.asarray(c, dtype=float)
+        w = np.zeros((c.size, edges.size - 1))
+        below, above = c <= 0.0, c >= 0.0
+        w[below, :j] = lower(c[below])
+        w[above, j:] += upper(c[above])
+        w[below & above] *= 0.5
+        return w
+
+    return weights
+
+
 def _linear_weights(nodes, x):
-    """[(index, weight)] interpolating ascending ``nodes`` at x, constant outside."""
-    if x <= nodes[0]:
-        return [(0, 1.0)]
-    if x >= nodes[-1]:
-        return [(len(nodes) - 1, 1.0)]
-    j = int(np.searchsorted(nodes, x))
-    t = (x - nodes[j - 1]) / (nodes[j] - nodes[j - 1])
-    return [(j - 1, 1.0 - t), (j, t)]
+    """Weights (len(x), len(nodes)) of linear interpolation, constant outside."""
+    eye = np.eye(nodes.size)
+    return np.stack([np.interp(x, nodes, row) for row in eye], axis=1)
+
+
+def _linear_bin_averages(nodes, edges):
+    """Weights (n_bins, len(nodes)): bin averages of the linear interpolant."""
+    rows = []
+    for a, b in pairwise(edges):
+        x = np.unique(np.concatenate([[a, b], nodes[(nodes > a) & (nodes < b)]]))
+        y = _linear_weights(nodes, x)
+        rows.append(0.5 * np.diff(x) @ (y[1:] + y[:-1]) / (b - a))
+    return np.array(rows)
 
 
 class _SkyEntry(_ResponseEntry):
@@ -57,41 +114,51 @@ class _SkyEntry(_ResponseEntry):
         self._debug = debug
         self._height_data = None
         self._linear_quantities = None
-        self._maps = [library.profiles[p] for p in description["profiles"]]
+        self._index = {name: i for i, name in enumerate(model.names)}
+        # Attributes of the base classes that do not apply to a sky map.
+        self._tables, self._fl_spl, self._jac_spl = {}, {}, {}
+        self._spl_contains_average = False
+
+        maps = [library.profiles[p] for p in description["profiles"]]
         self._az_edges = np.asarray(description["azimuth_edges_deg"], dtype=float)
-        self._az_centres = 0.5 * (self._az_edges[1:] + self._az_edges[:-1])
         self._cos_edges = np.asarray(description["cos_zenith_edges"], dtype=float)
-
-        keys = [a for a in self._maps[0] if a != "average"]
-        if any(set(m) - {"average"} != set(keys) for m in self._maps):
+        keys = [a for a in maps[0] if a != "average"]
+        if any(set(m) - {"average"} != set(keys) for m in maps):
             raise ValueError(f"Sky {site}: azimuth profiles have different angles")
-        self._zen_keys, self._zen_cos = self._sorted_by_cos(keys)
+        zen_keys, zen_cos = self._sorted_by_cos(keys)
         centres = 0.5 * (self._cos_edges[1:] + self._cos_edges[:-1])
-        if len(keys) != len(centres) or not np.allclose(
-            self._zen_cos, centres, atol=1e-4
-        ):
+        if len(keys) != len(centres) or not np.allclose(zen_cos, centres, atol=1e-4):
             raise ValueError(f"Sky {site}: profiles must be tabulated at the bin centres")
+        # Map tables in (azimuth bin, cos-zenith bin) order, the order of the weights.
+        self._map_tables = [m[k] for m in maps for k in zen_keys]
+        self._zen_weights = _zenith_histospline(self._cos_edges)
+        self._az_weights = _histospline(self._az_edges, periodic=True)
+        self._zenith_deg_arr = np.degrees(np.arccos(zen_cos))[::-1]
+        self._zenith_cos_arr = zen_cos[::-1]
+        self._zenith_angles = list(zen_keys)
 
-        self._he, self._blend = None, None
-        tables = [t for m in self._maps for a, t in m.items() if a != "average"]
+        self._he, self._blend, self._he_tables = None, None, []
         he = description.get("high_energy")
         if he is not None and he["profile"] in library.profiles:
             self._he = library.profiles[he["profile"]]
-            self._he_keys, self._he_cos = self._sorted_by_cos(
+            he_keys, self._he_cos = self._sorted_by_cos(
                 [a for a in self._he if a != "average"]
             )
+            self._he_tables = [self._he[k] for k in he_keys]
+            self._he_bins = _linear_bin_averages(self._he_cos, self._cos_edges)
             self._blend = tuple(map(float, he["blend_GeV"]))
         elif he is not None and debug > 0:
             print(
                 f"Sky {site}: high-energy profile {he['profile']} is not loaded; "
                 "the map serves its own energy range only."
             )
-        he_tables = [t for a, t in (self._he or {}).items() if a != "average"]
-        map_species = set.intersection(*(set(t) for t in tables))
-        he_species = (
-            set.intersection(*(set(t) for t in he_tables)) if he_tables else set()
-        )
-        joined = map_species & he_species if he_tables else map_species
+
+        def common(tables):
+            return set.intersection(*(set(t) for t in tables))
+
+        map_species = common(self._map_tables)
+        he_species = common(self._he_tables) if self._he_tables else set()
+        joined = map_species & he_species if self._he_tables else map_species
         # Prompt leptons are not part of the map: the high-energy profile supplies
         # them at all of its energies, and conventional plus prompt is formed here.
         self._prompt = {s for s in he_species - map_species if s.startswith("pr_")}
@@ -109,26 +176,18 @@ class _SkyEntry(_ResponseEntry):
             for q, (num, den) in derived.items()
             if set(num) | set(den or {}) <= set(self._species) and q not in self._species
         ]
-        self._index = {name: i for i, name in enumerate(model.names)}
-        # Attributes of the base classes that do not apply to a sky map.
-        self._tables, self._fl_spl, self._jac_spl = {}, {}, {}
-        self._spl_contains_average = False
-        self._zenith_angles = list(self._zen_keys)
-        self._zenith_deg_arr = np.degrees(np.arccos(self._zen_cos))[::-1]
-        self._zenith_cos_arr = self._zen_cos[::-1]
 
         if self._he is not None:
             lower, upper = self._blend
             for s in joined:
-                map_upper = min(t[s].domain[1] for t in tables)
-                he_lower = max(t[s].domain[0] for t in he_tables)
+                map_upper = min(t[s].domain[1] for t in self._map_tables)
+                he_lower = max(t[s].domain[0] for t in self._he_tables)
                 if upper > map_upper * (1 + 1e-9) or lower < he_lower * (1 - 1e-9):
                     raise ValueError(
                         f"Sky {site}: blend window {lower:g}-{upper:g} GeV must lie "
                         f"within the map (up to {map_upper:g} GeV) and the high-energy "
                         f"profile (from {he_lower:g} GeV) for {s}"
                     )
-        self._map_tables, self._he_tables = tables, he_tables
 
     @staticmethod
     def _sorted_by_cos(keys):
@@ -189,45 +248,36 @@ class _SkyEntry(_ResponseEntry):
         num, den = self._terms(quantity)
         return set(num) | set(den or {})
 
-    def _zenith_bin(self, cos_z):
-        i = int(np.searchsorted(self._cos_edges, cos_z, side="right")) - 1
-        return min(max(i, 0), len(self._cos_edges) - 2)
-
-    def _map_weights(self, zenith_deg, azimuth_deg, binned):
-        """[(azimuth bin, zenith key, weight)] of the map tables for one direction."""
+    def _weights(self, zenith_deg, azimuth_deg, binned):
+        """Weights of the map tables (n_dir, n_azimuth * n_zenith) and of the
+        high-energy angles (n_dir, n_angles) for arrays of directions."""
         cos_z = np.cos(np.radians(zenith_deg))
+        n_zen, n_az = self._cos_edges.size - 1, self._az_edges.size - 1
         if binned:
-            zen = [(self._zenith_bin(cos_z), 1.0)]
+            i = np.searchsorted(self._cos_edges, cos_z, side="right") - 1
+            i = np.clip(i, 0, n_zen - 1)
+            w_zen = np.eye(n_zen)[i]
         else:
-            zen = _linear_weights(self._zen_cos, cos_z)
-        n = len(self._az_centres)
+            w_zen = self._zen_weights(cos_z)
         if azimuth_deg is None:
-            width = np.diff(self._az_edges) / 360.0
-            az = [(k, width[k]) for k in range(n)]
+            w_az = np.broadcast_to(np.diff(self._az_edges) / 360.0, (cos_z.size, n_az))
         elif binned:
             x = (azimuth_deg - self._az_edges[0]) % 360.0 + self._az_edges[0]
-            k = int(np.searchsorted(self._az_edges, x, side="right")) - 1
-            az = [(min(k, n - 1), 1.0)]
+            k = np.searchsorted(self._az_edges, x, side="right") - 1
+            w_az = np.eye(n_az)[np.clip(k, 0, n_az - 1)]
         else:
-            offsets = np.append(self._az_centres - self._az_centres[0], 360.0)
-            x = (azimuth_deg - self._az_centres[0]) % 360.0
-            k = int(np.searchsorted(offsets, x, side="right")) - 1
-            t = (x - offsets[k]) / (offsets[k + 1] - offsets[k])
-            az = [(k, 1.0 - t), ((k + 1) % n, t)]
-        return [(k, self._zen_keys[i], wa * wz) for k, wa in az for i, wz in zen]
-
-    def _he_weights(self, zenith_deg, binned):
-        cos_z = np.cos(np.radians(zenith_deg))
-        if binned:
-            i = self._zenith_bin(cos_z)
-            cos_z = 0.5 * (self._cos_edges[i] + self._cos_edges[i + 1])
-        return [(self._he_keys[i], w) for i, w in _linear_weights(self._he_cos, cos_z)]
+            w_az = self._az_weights(azimuth_deg)
+        w_map = (w_az[:, :, None] * w_zen[:, None, :]).reshape(cos_z.size, -1)
+        if self._he is None:
+            return w_map, None
+        w_he = self._he_bins[i] if binned else _linear_weights(self._he_cos, cos_z)
+        return w_map, w_he
 
     # ---------------------------------------------------------------- evaluation
     def _check_input(self, energy, quantity) -> None:
-        assert (
-            quantity in self._quantities
-        ), f"Quantity must be one of {', '.join(self._quantities)}."
+        assert quantity in self._quantities, (
+            f"Quantity must be one of {', '.join(self._quantities)}."
+        )
         lower, upper = self.energy_range(quantity)
         tolerance = 1e-12
         if np.max(energy) > upper * (1 + tolerance) or np.min(energy) < lower * (
@@ -235,66 +285,45 @@ class _SkyEntry(_ResponseEntry):
         ):
             hint = ""
             if self._he is None and self.description.get("high_energy"):
-                hint = (
-                    f"; load {self.description['high_energy']['profile']} " "to extend it"
-                )
+                hint = f"; load {self.description['high_energy']['profile']} to extend it"
             raise AssertionError(
                 f"Energy out of range for {quantity}: {lower:g} - {upper:g} GeV{hint}"
             )
 
-    def _species_direction(
-        self, log_e, zenith_deg, azimuth_deg, species, theta, gradient, binned
-    ):
-        """Flux of one species in one direction and its gradient over all parameters."""
+    def _species_flux(self, log_e, species, theta, gradient, w_map, w_he):
+        """Flux (n_E, n_dir) of one species and its gradient (n_params, n_E, n_dir)."""
         if species in self._totals:
             (fc, gc), (fp, gp) = (
-                self._species_direction(
-                    log_e, zenith_deg, azimuth_deg, s, theta, gradient, binned
-                )
+                self._species_flux(log_e, s, theta, gradient, w_map, w_he)
                 for s in self._totals[species]
             )
             return fc + fp, (gc + gp) if gradient else None
-        f = np.zeros(log_e.size)
-        g = np.zeros((len(self._model.names), log_e.size)) if gradient else None
         if species in self._prompt:
-            w_he = np.ones(log_e.size)
+            w = np.ones(log_e.size)
         elif self._he is None:
-            w_he = np.zeros(log_e.size)
+            w = np.zeros(log_e.size)
         else:
-            w_he = _smoothstep(log_e, *self._blend)
-        parts = []
-        low = w_he < 1.0
-        if low.any():
-            parts.append(
-                (
-                    low,
-                    1.0 - w_he[low],
-                    [
-                        (self._maps[k][key][species], w)
-                        for k, key, w in self._map_weights(
-                            zenith_deg, azimuth_deg, binned
-                        )
-                    ],
-                )
-            )
-        high = w_he > 0.0
-        if high.any():
-            parts.append(
-                (
-                    high,
-                    w_he[high],
-                    [
-                        (self._he[key][species], w)
-                        for key, w in self._he_weights(zenith_deg, binned)
-                    ],
-                )
-            )
-        for mask, blend, terms in parts:
-            for table, w in terms:
-                fv, gv = self._model.evaluate(table, log_e[mask], theta, gradient)
-                f[mask] += w * blend * fv
-                if gradient:
-                    g[:, mask] += w * blend * gv
+            w = _smoothstep(log_e, *self._blend)
+        f = np.zeros((log_e.size, w_map.shape[0]))
+        g = np.zeros((len(self._model.names),) + f.shape) if gradient else None
+        # The map below the window, the high-energy profile above, both inside.
+        for mask, blend, tables, weights in (
+            (w < 1.0, 1.0 - w, self._map_tables, w_map),
+            (w > 0.0, w, self._he_tables, w_he),
+        ):
+            if not mask.any():
+                continue
+            used = np.flatnonzero(np.any(weights != 0.0, axis=0))
+            values = [
+                self._model.evaluate(tables[t][species], log_e[mask], theta, gradient)
+                for t in used
+            ]
+            weights = weights[:, used]
+            fv = np.array([v for v, _ in values])
+            f[mask] += blend[mask, None] * (fv.T @ weights.T)
+            if gradient:
+                gv = np.array([gt for _, gt in values])
+                g[:, mask] += blend[mask, None] * np.einsum("tpe,dt->ped", gv, weights)
         return f, g
 
     def _evaluate_directions(
@@ -303,36 +332,25 @@ class _SkyEntry(_ResponseEntry):
         """Value (n_E, n_dir) and gradient (n_params, n_E, n_dir) of ``quantity``."""
         log_e = np.log(np.atleast_1d(np.asarray(energy, dtype=float)))
         zen, az, shape = self._directions(zenith_deg, azimuth_deg)
+        w_map, w_he = self._weights(zen, az, binned)
         theta = self._theta()
         num, den = self._terms(quantity)
-        n_e, n_p = log_e.size, len(self._model.names)
-        value = np.empty((n_e, zen.size))
-        grad = np.empty((n_p, n_e, zen.size)) if gradient else None
-        for d in range(zen.size):
-            a = None if az is None else az[d]
 
-            def combine(weights):
-                total, tgrad = 0.0, 0.0
-                for species, w in weights.items():
-                    f, g = self._species_direction(
-                        log_e, zen[d], a, species, theta, gradient, binned
-                    )
-                    total = total + w * f
-                    if gradient:
-                        tgrad = tgrad + w * g
-                return total, tgrad
-
-            n, gn = combine(num)
-            if den is None:
-                value[:, d] = n
+        def combine(weights):
+            total, grad = 0.0, 0.0
+            for species, c in weights.items():
+                f, g = self._species_flux(log_e, species, theta, gradient, w_map, w_he)
+                total = total + c * f
                 if gradient:
-                    grad[:, :, d] = gn
-                continue
-            dd, gd = combine(den)
-            value[:, d] = n / dd
-            if gradient:
-                grad[:, :, d] = (gn * dd - n * gd) / dd**2
-        return value, grad, shape
+                    grad = grad + c * g
+            return total, grad
+
+        n, gn = combine(num)
+        if den is None:
+            return n, gn, shape
+        d, gd = combine(den)
+        grad = (gn * d - n * gd) / d**2 if gradient else None
+        return n / d, grad, shape
 
     @staticmethod
     def _directions(zenith_deg, azimuth_deg):
@@ -378,8 +396,8 @@ class _SkyEntry(_ResponseEntry):
             Azimuth in degrees (``azimuth_convention``), broadcast against
             ``zenith_deg``. None averages over azimuth.
         binned : bool, optional
-            Return the average of the bin containing the direction instead of
-            interpolating between bin centres.
+            Return the average over the bin containing the direction instead of
+            the flux in the direction.
 
         Returns
         -------

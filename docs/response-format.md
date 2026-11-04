@@ -119,8 +119,9 @@ A sky map gives a site's flux by direction, zenith and azimuth, for example a
 
 - One profile per azimuth bin, each tabulated at the zenith angles of the
   cos(zenith) bin centres, both hemispheres. Values are bin averages.
-- `high_energy` (optional) names a profile without azimuth dependence, e.g. a
-  1D calculation for the same site, that takes over above the window. Inside
+- `high_energy` (optional) names an ordinary profile of point values without
+  azimuth dependence, e.g. a 1D calculation for the same site, that takes over
+  above the window. Inside
   the window the two are blended with a weight rising smoothly in log E
   (3t² − 2t³). The window must lie within both energy ranges. Prompt species
   (`pr_*`) come from this profile at all its energies, and `total_*` is formed
@@ -138,10 +139,15 @@ sky.gradient(E, 95.0, "numuflux", azimuth_deg=90.0)  # rows: sky.parameter_names
 sky.covariance                                       # their covariance
 ```
 
-Directions are interpolated linearly in the flux, in cos(zenith) between the
-bin centres (constant beyond the outermost centres) and periodically in
-azimuth. `binned=True` returns the average of the bin that contains the
-direction. Without `azimuth_deg` the flux is averaged over azimuth. Zenith
+The flux in a direction is reconstructed from the bin averages with a
+histospline: the derivative of the cubic spline through the cumulative bin
+integrals. It reproduces every bin average and is exact for a flux quadratic in
+cos(zenith) (from three bins per side on). In cos(zenith) the spline is
+"not-a-knot" and split at the horizon, where the flux has a cusp; at
+cos(zenith) = 0 the two one-sided values are averaged. In azimuth it is
+periodic. The high-energy profile is interpolated linearly in cos(zenith), as
+any profile. `binned=True` returns the average of the bin that contains the
+direction (for the high-energy profile, the bin average of its interpolant). Without `azimuth_deg` the flux is averaged over azimuth. Zenith
 angles run from 0 (down-going) to 180 degrees (up-going). The result has shape
 (n_E, *directions), with `zenith_deg` and `azimuth_deg` broadcast. Each value is
 a weighted sum of table entries, so `gradient` is exact. Uncertainties of
