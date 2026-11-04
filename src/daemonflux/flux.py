@@ -202,6 +202,7 @@ class Flux:
         self.exclude = exclude
         self._debug = debug
         self._uncorrelated_hadr_errors = uncorrelated_hadr_errors
+        self.sky_sites = []
 
         self._expected_sha256 = {}
         self.bundle = None
@@ -363,6 +364,16 @@ class Flux:
             )
             setattr(self, profile, entry)
             self.supported_fluxes.append(profile)
+        from .sky import _SkyEntry
+
+        for site, description in library.sky.items():
+            if site in library.profiles:
+                raise ValueError(f"Sky site {site} has the name of a profile")
+            entry = _SkyEntry(site, description, library, model, deepcopy(params),
+                              self._debug)
+            setattr(self, site, entry)
+            self.supported_fluxes.append(site)
+            self.sky_sites.append(site)
 
     def _make_parameters(
         self, known_pars, cov, groups, cal_file, basis_sha256=None, strict=None
@@ -612,6 +623,13 @@ class Flux:
         s = ""
         for exp in self._fl_spl:
             s += "{0}: [{1}]\n".format(exp, ", ".join(self._fl_spl[exp].keys()))
+        for site in getattr(self, "sky_sites", []):
+            sky = self[site]
+            he = sky.high_energy
+            s += "{0}: sky map, {1} azimuth x {2} zenith bins{3}\n".format(
+                site, len(sky.azimuth_edges) - 1, len(sky.cos_zenith_edges) - 1,
+                f", joined to {he['profile']} at {he['blend_GeV']} GeV" if he else "",
+            )
         return s
 
     def print_locations(self):
@@ -687,7 +705,10 @@ class Flux:
         """
         return self._get_flux_instance(exp)._params
 
-    def flux(self, energy, zenith_deg, quantity, params={}, exp="", height_km=None):
+    def flux(
+        self, energy, zenith_deg, quantity, params={}, exp="", height_km=None,
+        azimuth_deg=None,
+    ):
         """
         The flux of a given quantity for the specified energy energy and zenith angles.
 
@@ -706,6 +727,9 @@ class Flux:
             A dictionary of parameter values to shift daemonflux off the baseline.
         height_km : float, optional
             Altitude in km. Requires a spline file with height grid. Default: surface.
+        azimuth_deg : float or np.ndarray, optional
+            Azimuth in degrees, for a sky map (``sky_sites``). None averages over
+            azimuth.
 
         Returns
         -------
@@ -717,12 +741,25 @@ class Flux:
         Exception
             If `zenith_deg` is "average" but splines do not contain average flux.
         """
-        return self._get_flux_instance(exp).flux(
-            energy, zenith_deg, quantity, params, height_km=height_km
-        )
+        entry = self._get_flux_instance(exp)
+        if exp in self.sky_sites:
+            return entry.flux(
+                energy, zenith_deg, quantity, params, height_km=height_km,
+                azimuth_deg=azimuth_deg,
+            )
+        self._no_azimuth(exp, azimuth_deg)
+        return entry.flux(energy, zenith_deg, quantity, params, height_km=height_km)
+
+    def _no_azimuth(self, exp, azimuth_deg):
+        if azimuth_deg is not None:
+            raise ValueError(
+                f"{exp or self.supported_fluxes[0]} has no azimuth dependence; "
+                f"sky maps: {self.sky_sites}"
+            )
 
     def error(
-        self, energy, zenith_deg, quantity, only_hadronic=False, exp="", height_km=None
+        self, energy, zenith_deg, quantity, only_hadronic=False, exp="", height_km=None,
+        azimuth_deg=None,
     ):
         """
         The flux of a given quantity for the specified energy energy and zenith angles.
@@ -742,6 +779,8 @@ class Flux:
             error, by default False.
         height_km : float, optional
             Altitude in km. Requires a spline file with height grid. Default: surface.
+        azimuth_deg : float or np.ndarray, optional
+            Azimuth in degrees, for a sky map (``sky_sites``).
 
         Returns
         -------
@@ -753,12 +792,15 @@ class Flux:
         Exception
             If `zenith_deg` is "average" but splines do not contain average flux.
         """
-        return self._get_flux_instance(exp).error(
-            energy,
-            zenith_deg,
-            quantity,
-            only_hadronic,
-            height_km=height_km,
+        entry = self._get_flux_instance(exp)
+        if exp in self.sky_sites:
+            return entry.error(
+                energy, zenith_deg, quantity, only_hadronic, height_km=height_km,
+                azimuth_deg=azimuth_deg,
+            )
+        self._no_azimuth(exp, azimuth_deg)
+        return entry.error(
+            energy, zenith_deg, quantity, only_hadronic, height_km=height_km
         )
 
     def chi2(self, params={}, exp=""):
@@ -1260,6 +1302,22 @@ class _FluxEntry(Flux):
             )
         else:
             return self._error_from_interp(energy, zenith_deg, quantity, only_hadronic)
+
+    @property
+    def quantities(self) -> List[str]:
+        """Quantities this entry evaluates."""
+        return list(self._quantities)
+
+    @property
+    def covariance(self) -> np.ndarray:
+        """Covariance of the parameters (calibration posterior or prior), with rows
+        in ``parameter_names`` order; the rows of ``gradient``. None without one."""
+        return None if self._params.cov is None else self._params.cov.copy()
+
+    @property
+    def parameter_names(self) -> List[str]:
+        """Names of the parameters that carry uncertainty, in covariance order."""
+        return list(self._params.known_parameters)
 
     def chi2(self, params={}):
         """

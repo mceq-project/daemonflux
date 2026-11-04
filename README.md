@@ -76,6 +76,18 @@ one `Flux` with `spl_file=[...]` or a sha256-verified bundle manifest with
 uncertainties are exact. See [docs/response-format.md](docs/response-format.md)
 for the layout, the response model and the converter for legacy files.
 
+A response file can also describe a site's sky map: fluxes by zenith and azimuth
+(e.g. a 3D calculation with the geomagnetic cutoff), joined to a 1D table above a
+given energy window. Such a site takes the azimuth as an argument:
+
+```python
+flux = Flux(bundle="kamioka.bundle.json")
+flux.flux(E, 95.0, "numuflux", exp="Kamioka", azimuth_deg=90.0)
+flux["Kamioka"].error(E, 95.0, "numuflux", azimuth_deg=90.0)
+```
+
+See [Sky maps](docs/response-format.md#sky-maps).
+
 ## Using parameter correlations represented by the covariance matrix
 
 The parameters of the model are correlated. These correlations are drdetermined from the data we have used for the fit. The errors are already computed taking the covariance matrix into account when using the `error` method. If daemonflux is used in a fit with free floating parameters, one can include these correlations by adding the chi2 as additional penalty term. The chi2 for the current combination of parameters can be obtained by calling `flux.chi2({dictionary of modified parameters})`.
