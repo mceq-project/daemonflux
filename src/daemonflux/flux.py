@@ -1387,9 +1387,13 @@ class _ResponseEntry(_FluxEntry):
         ), f"Energy out of range for {quantity}: {lower:g} - {upper:g} GeV"
 
     def _theta(self):
+        """Parameter values in model order (zero for parameters not in ``_params``)."""
+        names = self._params.known_parameters
+        if names is not getattr(self, "_theta_names", None):
+            self._theta_names = names
+            self._theta_rows = np.array([self._index[n] for n in names], dtype=int)
         theta = np.zeros(len(self._model.names))
-        for name, value in self._params:
-            theta[self._index[name]] = value
+        theta[self._theta_rows] = self._params.values
         return theta
 
     def _evaluate(self, energy, zenith_deg, quantity, gradient=False):
